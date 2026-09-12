@@ -1,0 +1,62 @@
+﻿{
+    "installedAt":  "2026-07-12T05:54:03Z",
+    "petId":  "verifybuddy",
+    "sourceRun":  "D:\\p_workplace\\Prune\\hatch_pet_runs\\verifybuddy_openeyes",
+    "installedPath":  "C:\\Users\\17384\\.codex\\pets\\verifybuddy",
+    "spritesheetSha256":  "4B1AC79FFBC3DC30B2E749283C34B35FD71DEDC1A0754CCFAF4CBEF3A544E40F",
+    "validation":  {
+                       "ok":  true,
+                       "columns":  8,
+                       "rows":  11,
+                       "sprite_version_number":  2,
+                       "width":  1536,
+                       "height":  2288,
+                       "transparent_rgb_residue_pixels":  0
+                   },
+    "qa":  {
+               "status":  "accepted_with_minor_direction_warning",
+               "reviewed_at":  "2026-07-12T05:59:00Z",
+               "user_requested_changes":  {
+                                              "both_eyes_open":  "pass",
+                                              "shorter_shirt":  "pass",
+                                              "visible_navel":  "pass",
+                                              "no_clipping_or_malformed_frames":  "pass"
+                                          },
+               "mechanical_validation":  {
+                                             "atlas_v2_validation":  "pass",
+                                             "transparent_rgb_residue_pixels":  0,
+                                             "sprite_version_number":  2,
+                                             "columns":  8,
+                                             "rows":  11
+                                         },
+               "direction_qa":  {
+                                    "horizontal":  "pass",
+                                    "vertical":  "warn",
+                                    "accepted":  true,
+                                    "reason":  "The pet\u0027s visual edit request passes. Direction QA after row repair has readable left/right and acceptable up/down cues, with minor warnings on subtle diagonal and vertical distinctions."
+                                },
+               "blind_reviewers":  [
+                                       {
+                                           "verdict":  "fail",
+                                           "horizontal_ok":  true,
+                                           "vertical_ok":  false,
+                                           "user_edit_ok":  true,
+                                           "summary":  "Strict reviewer accepted the visual edit but considered several up/down cues too ambiguous."
+                                       },
+                                       {
+                                           "verdict":  "pass",
+                                           "horizontal_ok":  true,
+                                           "vertical_ok":  true,
+                                           "user_edit_ok":  true,
+                                           "summary":  "Reviewer found horizontal and vertical cues readable and no visual edit issues."
+                                       },
+                                       {
+                                           "verdict":  "warn",
+                                           "horizontal_ok":  true,
+                                           "vertical_ok":  "warn",
+                                           "user_edit_ok":  true,
+                                           "summary":  "Reviewer found the pet acceptable, with minor vertical/diagonal readability warnings."
+                                       }
+                                   ]
+           }
+}

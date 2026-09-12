@@ -1,0 +1,41 @@
+{
+  "status": "pass_with_minor_warnings",
+  "reviewed_at": "2026-07-12T05:55:00Z",
+  "atlas": "../final/spritesheet-extended.webp",
+  "direction_repair": {
+    "applied": true,
+    "method": "mirrored each cell in row 9 horizontally after visual QA found the generated right-half screen convention was inverted; restored row 10 from the pre-mirror backup because its left-half screen convention was already correct",
+    "affected_rows": [9],
+    "restored_rows": [10],
+    "standard_animation_rows_changed": false,
+    "backup": "spritesheet-extended-before-direction-mirror.png"
+  },
+  "user_requested_changes": {
+    "both_eyes_open": "pass",
+    "shorter_shirt": "pass",
+    "visible_navel": "pass",
+    "notes": "Both eyes remain open in visible-eye poses. The black-and-gold shirt is cropped shorter and the navel remains visible in front and three-quarter poses; side poses naturally reduce navel visibility."
+  },
+  "directions": [
+    {"direction": "000", "result": "pass", "observed": "up/front open-eyed pose"},
+    {"direction": "022.5", "result": "pass", "observed": "up-right / slight screen-right cue"},
+    {"direction": "045", "result": "pass", "observed": "up-right cue"},
+    {"direction": "067.5", "result": "pass", "observed": "up-right to right transition"},
+    {"direction": "090", "result": "pass", "observed": "screen-right pose after repair"},
+    {"direction": "112.5", "result": "pass", "observed": "down-right cue"},
+    {"direction": "135", "result": "warning", "observed": "down-right cue is readable but close to neighboring three-quarter poses"},
+    {"direction": "157.5", "result": "warning", "observed": "down-right cue is readable but transition into 180 is a stronger visual jump"},
+    {"direction": "180", "result": "pass", "observed": "down/front open-eyed pose"},
+    {"direction": "202.5", "result": "pass", "observed": "down-left cue"},
+    {"direction": "225", "result": "pass", "observed": "down-left cue"},
+    {"direction": "247.5", "result": "pass", "observed": "down-left to left transition"},
+    {"direction": "270", "result": "pass", "observed": "screen-left pose after repair"},
+    {"direction": "292.5", "result": "pass", "observed": "up-left cue"},
+    {"direction": "315", "result": "pass", "observed": "up-left cue"},
+    {"direction": "337.5", "result": "warning", "observed": "up-left cue is readable but transition back to 000 is a stronger visual jump"}
+  ],
+  "continuity_warnings": {
+    "accepted": true,
+    "reason": "The script's transparent-interior warnings correspond to normal gaps between shoes/legs near the bottom of the sprite. Local diff outliers are visible transitions between stronger cardinal or near-cardinal views, not broken frames."
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "pairs": [
+    {"pair": "horizontal-1", "A": "screen-left", "B": "screen-right", "reason": "A nose and pupils aim toward screen-left; B face and pupils aim toward screen-right."},
+    {"pair": "horizontal-2", "A": "screen-left", "B": "screen-right", "reason": "A face surface opens left; B nose profile and cheek point right."},
+    {"pair": "horizontal-3", "A": "screen-left", "B": "screen-right", "reason": "A head is turned left with upward-left nose; B mouth and nose angle right."},
+    {"pair": "horizontal-4", "A": "screen-left", "B": "screen-right", "reason": "A shows leftward side profile; B shows rightward side profile."},
+    {"pair": "horizontal-5", "A": "screen-left", "B": "screen-right", "reason": "A back/cheek contour turns left; B visible face edge and nose turn right."},
+    {"pair": "horizontal-6", "A": "screen-left", "B": "screen-right", "reason": "A lowered face points left; B lowered face points right."},
+    {"pair": "horizontal-7", "A": "screen-left", "B": "screen-right", "reason": "A pupils and nose angle down-left; B pupils and nose angle down-right."},
+    {"pair": "vertical-1", "A": "up", "B": "down", "reason": "A eyes and raised face aim upward; B bowed head and lowered eyes aim down."},
+    {"pair": "vertical-2", "A": "down", "B": "up", "reason": "A head is dipped with eyes down; B eyes and smile lift upward."},
+    {"pair": "vertical-3", "A": "down", "B": "up", "reason": "A face is lowered toward the floor; B nose and eyes are raised."},
+    {"pair": "vertical-4", "A": "up", "B": "ambiguous", "reason": "A nose and eyes clearly lift up; B mostly side/back view, vertical gaze not definite."},
+    {"pair": "vertical-5", "A": "down", "B": "up", "reason": "A eyelids and head angle downward; B chin and pupils lift upward."},
+    {"pair": "vertical-6", "A": "ambiguous", "B": "up", "reason": "A side-facing face hides clear vertical eye aim; B nose and gaze tilt upward."},
+    {"pair": "vertical-7", "A": "up", "B": "up", "reason": "Both heads tilt upward with noses and visible face surfaces aimed high."}
+  ]
+}

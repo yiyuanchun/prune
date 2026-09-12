@@ -1,0 +1,7 @@
+Create one clean full-body reference sprite for Codex pet Verify Buddy.
+
+Pet identity: Compact whole-body adult-coded anime chibi helper based on the previous Verify Buddy design: rounded friendly silhouette, short dark hair, BOTH EYES OPEN in every pose, mischievous smile without winking, black shirt with ornate gold geometric pattern but cropped shorter to reveal a small non-sexual belly button/navel, small neural-verification/pruning charm, meticulous research-review personality. Preserve the black-gold sticker style while making the clothing shorter and the belly button visible..
+Style: Pet-safe sprite: compact full-body mascot, readable in a 192x208 cell, clear silhouette, simple face, stable palette/materials, and crisp edges for chroma-key extraction. Style `sticker`: Polished sticker mascot with bold clean shapes, crisp outline, flat colors, and minimal highlight detail. User style notes: anime chibi sticker, thick clean outline, readable full body, both eyes open, cropped short shirt exposing navel, non-sexual playful mascot design, minimal details at 192x208 pet size, no text or logos.
+
+
+Place a single centered pose on a perfectly flat pure user-selected #00FF00 chroma-key background. Keep the full pet visible, compact, readable at 192x208, and easy to animate. Preserve approved reference identity cues. No scenery, text, borders, checkerboard transparency, shadows, glows, detached effects, or extra props. Keep #00FF00 and close colors out of the pet, props, highlights, and effects.

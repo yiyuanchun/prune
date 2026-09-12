@@ -1,0 +1,18 @@
+{
+  "pairs": [
+    {"pair": "horizontal-1", "A": "screen-left", "B": "screen-right", "reason": "A nose and pupils aim left of head center; B face and pupils aim right."},
+    {"pair": "horizontal-2", "A": "screen-left", "B": "screen-right", "reason": "A head surface and eyes turn left; B is a clear right-facing profile."},
+    {"pair": "horizontal-3", "A": "screen-left", "B": "screen-right", "reason": "A nose points left/up-left; B nose and visible cheek point right."},
+    {"pair": "horizontal-4", "A": "screen-left", "B": "screen-right", "reason": "A is a left-facing profile; B face and nose aim right."},
+    {"pair": "horizontal-5", "A": "screen-left", "B": "screen-right", "reason": "A back/side view still shows head turned left; B visible face edge and nose point right."},
+    {"pair": "horizontal-6", "A": "screen-left", "B": "screen-right", "reason": "A pupils and nose sit left of center; B pupils and face turn right."},
+    {"pair": "horizontal-7", "A": "ambiguous", "B": "ambiguous", "reason": "Both are mostly downward/top views; horizontal aim is not definite at this size."},
+    {"pair": "vertical-1", "A": "up", "B": "down", "reason": "A eyes and open face aim upward; B head is bowed with eyes down."},
+    {"pair": "vertical-2", "A": "down", "B": "up", "reason": "A face is lowered with pupils down; B eyes and face lift upward."},
+    {"pair": "vertical-3", "A": "down", "B": "up", "reason": "A bowed head and pupils read downward; B raised face and pupils read upward."},
+    {"pair": "vertical-4", "A": "up", "B": "ambiguous", "reason": "A nose and pupils aim upward; B side profile makes vertical aim unclear."},
+    {"pair": "vertical-5", "A": "down", "B": "up", "reason": "A eyes are lowered under the brow; B head tilt and pupils aim upward."},
+    {"pair": "vertical-6", "A": "ambiguous", "B": "up", "reason": "A side-facing view lacks definite vertical aim; B nose and eyes lift upward."},
+    {"pair": "vertical-7", "A": "up", "B": "ambiguous", "reason": "A face and nose are angled upward; B side profile does not make vertical aim definite."}
+  ]
+}

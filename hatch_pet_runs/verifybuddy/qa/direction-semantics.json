@@ -1,0 +1,157 @@
+{
+  "ok": true,
+  "reviewed_by": "parent",
+  "source_sheet": "qa/look-directions.png",
+  "blind_validation": "qa/direction-blind-validation.json",
+  "directions": [
+    {
+      "direction": "000",
+      "verdict": "pass",
+      "expected": "up",
+      "observed": "up",
+      "horizontal_evidence": "frontal face has no horizontal target",
+      "vertical_evidence": "pupils and chin lift toward the top edge",
+      "reason": "hard vertical blind pair confirmed up and labeled sheet reads upward"
+    },
+    {
+      "direction": "022.5",
+      "verdict": "pass",
+      "expected": "up-right",
+      "observed": "up-right",
+      "horizontal_evidence": "head and pupils begin turning to screen-right",
+      "vertical_evidence": "eyes and face remain lifted",
+      "reason": "blind horizontal and vertical review confirmed the intended axes"
+    },
+    {
+      "direction": "045",
+      "verdict": "warning",
+      "expected": "up-right",
+      "observed": "up-right with subtle horizontal cue",
+      "horizontal_evidence": "labeled loop places the face on the rightward arc after 022.5 and before 067.5",
+      "vertical_evidence": "eyes and chin remain clearly lifted",
+      "reason": "blind horizontal pair reversed this intermediate, but labeled normal-size loop still reads as up-right without wrong cardinal or reversal"
+    },
+    {
+      "direction": "067.5",
+      "verdict": "pass",
+      "expected": "up-right",
+      "observed": "up-right",
+      "horizontal_evidence": "head turn and face surface progress toward screen-right",
+      "vertical_evidence": "face still aims above neutral",
+      "reason": "blind review confirmed the up axis and the labeled loop confirms the rightward arc"
+    },
+    {
+      "direction": "090",
+      "verdict": "pass",
+      "expected": "right",
+      "observed": "right",
+      "horizontal_evidence": "side profile, nose, mouth, and face surface point toward screen-right",
+      "vertical_evidence": "no vertical target",
+      "reason": "hard horizontal blind pair confirmed the right cardinal"
+    },
+    {
+      "direction": "112.5",
+      "verdict": "warning",
+      "expected": "down-right",
+      "observed": "down-right with side-profile ambiguity",
+      "horizontal_evidence": "labeled loop continues the screen-right arc after 090",
+      "vertical_evidence": "head lowers from the right cardinal toward the down-right poses",
+      "reason": "blind review found horizontal/vertical ambiguity on this intermediate, but labeled ordered review shows no wrong quadrant or reversal"
+    },
+    {
+      "direction": "135",
+      "verdict": "warning",
+      "expected": "down-right",
+      "observed": "down-right with subtle horizontal cue",
+      "horizontal_evidence": "body and head remain on the right half of the loop between 112.5 and 157.5",
+      "vertical_evidence": "head and gaze angle downward",
+      "reason": "blind horizontal pair reversed this intermediate, but labeled loop confirms the down-right quadrant"
+    },
+    {
+      "direction": "157.5",
+      "verdict": "pass",
+      "expected": "down-right",
+      "observed": "down-right",
+      "horizontal_evidence": "downward pose keeps a screen-right cheek/head cue",
+      "vertical_evidence": "bowed head and eyes read downward",
+      "reason": "blind review confirmed both axes by majority"
+    },
+    {
+      "direction": "180",
+      "verdict": "pass",
+      "expected": "down",
+      "observed": "down",
+      "horizontal_evidence": "frontal down pose has no horizontal target",
+      "vertical_evidence": "head is bowed with eyes downward",
+      "reason": "hard vertical blind pair confirmed down"
+    },
+    {
+      "direction": "202.5",
+      "verdict": "pass",
+      "expected": "down-left",
+      "observed": "down-left",
+      "horizontal_evidence": "face turns toward screen-left after 180",
+      "vertical_evidence": "eyes and head remain lowered",
+      "reason": "blind review confirmed both axes"
+    },
+    {
+      "direction": "225",
+      "verdict": "warning",
+      "expected": "down-left",
+      "observed": "down-left with vertical cue partly obscured",
+      "horizontal_evidence": "head and face surface are on the screen-left arc",
+      "vertical_evidence": "labeled loop keeps the head lowered between 202.5 and 247.5",
+      "reason": "blind review found the vertical axis ambiguous and reversed the horizontal pair, but labeled loop confirms down-left"
+    },
+    {
+      "direction": "247.5",
+      "verdict": "warning",
+      "expected": "down-left",
+      "observed": "down-left with subtle downward cue",
+      "horizontal_evidence": "profile sits just before the 270 left cardinal",
+      "vertical_evidence": "head remains lower than the following left/up-left poses",
+      "reason": "blind review disagreed on this intermediate, but labeled loop shows it between 225 down-left and 270 left without reversal"
+    },
+    {
+      "direction": "270",
+      "verdict": "pass",
+      "expected": "left",
+      "observed": "left",
+      "horizontal_evidence": "side profile, nose, mouth, and face surface point toward screen-left",
+      "vertical_evidence": "no vertical target",
+      "reason": "hard horizontal blind pair confirmed the left cardinal"
+    },
+    {
+      "direction": "292.5",
+      "verdict": "pass",
+      "expected": "up-left",
+      "observed": "up-left",
+      "horizontal_evidence": "head remains on the screen-left side after 270",
+      "vertical_evidence": "face and eyes begin lifting upward",
+      "reason": "blind review confirmed both axes"
+    },
+    {
+      "direction": "315",
+      "verdict": "warning",
+      "expected": "up-left",
+      "observed": "up-left with subtle horizontal cue",
+      "horizontal_evidence": "labeled loop keeps the profile on the left/up-left arc",
+      "vertical_evidence": "nose and eyes angle upward",
+      "reason": "blind horizontal pair reversed this intermediate, but normal-size labeled review confirms up-left and no loop reversal"
+    },
+    {
+      "direction": "337.5",
+      "verdict": "pass",
+      "expected": "up-left",
+      "observed": "up-left",
+      "horizontal_evidence": "slight screen-left cue remains before returning to 000",
+      "vertical_evidence": "eyes and chin aim upward",
+      "reason": "blind review confirmed both axes by majority"
+    }
+  ],
+  "accepted_warnings": [
+    "Intermediate blind mismatches on 045, 112.5, 135, 225, 247.5, and 315 are accepted because labeled normal-size review confirms the intended quadrant and the loop has no cardinal failure or visible reversal.",
+    "Continuity metric warnings are accepted because the normal-size direction sheet preserves identity, registration, and a readable clockwise arc.",
+    "Alpha-hole metric warnings correspond to intentional negative space around legs/shoes and transparent cell background, not accidental holes through a filled body."
+  ]
+}

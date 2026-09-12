@@ -1,0 +1,28 @@
+{
+  "ok": true,
+  "chroma_key": {
+    "hex": "#00FF00",
+    "rgb": [
+      0,
+      255,
+      0
+    ],
+    "threshold": 96.0
+  },
+  "rows": [
+    {
+      "state": "running-right",
+      "frames": [
+        "D:\\p_workplace\\Prune\\hatch_pet_runs\\verifybuddy_openeyes\\qa\\rows\\running-right\\frames\\running-right\\00.png",
+        "D:\\p_workplace\\Prune\\hatch_pet_runs\\verifybuddy_openeyes\\qa\\rows\\running-right\\frames\\running-right\\01.png",
+        "D:\\p_workplace\\Prune\\hatch_pet_runs\\verifybuddy_openeyes\\qa\\rows\\running-right\\frames\\running-right\\02.png",
+        "D:\\p_workplace\\Prune\\hatch_pet_runs\\verifybuddy_openeyes\\qa\\rows\\running-right\\frames\\running-right\\03.png",
+        "D:\\p_workplace\\Prune\\hatch_pet_runs\\verifybuddy_openeyes\\qa\\rows\\running-right\\frames\\running-right\\04.png",
+        "D:\\p_workplace\\Prune\\hatch_pet_runs\\verifybuddy_openeyes\\qa\\rows\\running-right\\frames\\running-right\\05.png",
+        "D:\\p_workplace\\Prune\\hatch_pet_runs\\verifybuddy_openeyes\\qa\\rows\\running-right\\frames\\running-right\\06.png",
+        "D:\\p_workplace\\Prune\\hatch_pet_runs\\verifybuddy_openeyes\\qa\\rows\\running-right\\frames\\running-right\\07.png"
+      ],
+      "method": "components"
+    }
+  ]
+}

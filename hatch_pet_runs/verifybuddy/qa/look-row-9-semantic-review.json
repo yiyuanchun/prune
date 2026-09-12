@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "row": "look-row-9",
+  "directions": {
+    "000": {"verdict": "pass", "expected": "up", "observed": "eyes and chin point upward with frontal body"},
+    "022.5": {"verdict": "pass", "expected": "up-right", "observed": "head and eyes begin turning toward screen-right while staying upward"},
+    "045": {"verdict": "pass", "expected": "up-right", "observed": "head, eyes, and face surface read up-right"},
+    "067.5": {"verdict": "pass", "expected": "up-right", "observed": "mostly screen-right with upward cue"},
+    "090": {"verdict": "pass", "expected": "right", "observed": "profile turns toward screen-right"},
+    "112.5": {"verdict": "pass", "expected": "down-right", "observed": "screen-right turn with head lowering"},
+    "135": {"verdict": "pass", "expected": "down-right", "observed": "head and eyes read down-right"},
+    "157.5": {"verdict": "pass", "expected": "down-right", "observed": "near-down pose with screen-right cue, ready to flow into 180"}
+  }
+}

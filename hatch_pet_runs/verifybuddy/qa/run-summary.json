@@ -1,0 +1,15 @@
+﻿{
+    "ok":  true,
+    "spriteVersionNumber":  2,
+    "run_dir":  "D:\\p_workplace\\Prune\\hatch_pet_runs\\verifybuddy",
+    "spritesheet":  "D:\\p_workplace\\Prune\\hatch_pet_runs\\verifybuddy\\final\\spritesheet-extended.webp",
+    "validation":  "D:\\p_workplace\\Prune\\hatch_pet_runs\\verifybuddy\\final\\validation-extended.json",
+    "chroma_despill":  "D:\\p_workplace\\Prune\\hatch_pet_runs\\verifybuddy\\qa\\chroma-despill-extended.json",
+    "contact_sheet":  "D:\\p_workplace\\Prune\\hatch_pet_runs\\verifybuddy\\qa\\contact-sheet-extended.png",
+    "direction_sheet":  "D:\\p_workplace\\Prune\\hatch_pet_runs\\verifybuddy\\qa\\look-directions.png",
+    "direction_semantics":  "D:\\p_workplace\\Prune\\hatch_pet_runs\\verifybuddy\\qa\\direction-semantics.json",
+    "blind_direction_validation":  "D:\\p_workplace\\Prune\\hatch_pet_runs\\verifybuddy\\qa\\direction-blind-validation.json",
+    "continuity":  "D:\\p_workplace\\Prune\\hatch_pet_runs\\verifybuddy\\qa\\look-continuity.json",
+    "review":  "D:\\p_workplace\\Prune\\hatch_pet_runs\\verifybuddy\\qa\\review.json",
+    "package":  "C:\\Users\\17384\\.codex\\pets\\verifybuddy"
+}

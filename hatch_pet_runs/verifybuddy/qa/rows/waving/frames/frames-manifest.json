@@ -1,0 +1,24 @@
+{
+  "ok": true,
+  "chroma_key": {
+    "hex": "#00FF00",
+    "rgb": [
+      0,
+      255,
+      0
+    ],
+    "threshold": 96.0
+  },
+  "rows": [
+    {
+      "state": "waving",
+      "frames": [
+        "D:\\p_workplace\\Prune\\hatch_pet_runs\\verifybuddy\\qa\\rows\\waving\\frames\\waving\\00.png",
+        "D:\\p_workplace\\Prune\\hatch_pet_runs\\verifybuddy\\qa\\rows\\waving\\frames\\waving\\01.png",
+        "D:\\p_workplace\\Prune\\hatch_pet_runs\\verifybuddy\\qa\\rows\\waving\\frames\\waving\\02.png",
+        "D:\\p_workplace\\Prune\\hatch_pet_runs\\verifybuddy\\qa\\rows\\waving\\frames\\waving\\03.png"
+      ],
+      "method": "components"
+    }
+  ]
+}

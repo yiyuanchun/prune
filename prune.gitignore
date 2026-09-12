@@ -1,0 +1,5 @@
+target/
+.idea/
+parnv-MC-plane/
+*.iml
+*.log

@@ -1,0 +1,18 @@
+{
+  "pairs": [
+    {"pair": "horizontal-1", "A": "screen-left", "B": "screen-right", "reason": "A nose and pupils aim left; B face and pupils aim right."},
+    {"pair": "horizontal-2", "A": "screen-left", "B": "screen-right", "reason": "A face surface opens left; B profile/nose points right."},
+    {"pair": "horizontal-3", "A": "screen-right", "B": "screen-left", "reason": "A head is turned right; B nose and face edge point left."},
+    {"pair": "horizontal-4", "A": "screen-left", "B": "screen-right", "reason": "A side profile faces left; B side profile faces right."},
+    {"pair": "horizontal-5", "A": "screen-left", "B": "screen-right", "reason": "A nose/profile points left; B face opens right."},
+    {"pair": "horizontal-6", "A": "screen-left", "B": "screen-right", "reason": "A pupils and head tilt left; B pupils and nose aim right."},
+    {"pair": "horizontal-7", "A": "screen-left", "B": "screen-right", "reason": "A downward face still aims left; B downward face aims right."},
+    {"pair": "vertical-1", "A": "up", "B": "down", "reason": "A eyes and raised face aim upward; B head bowed with eyes downward."},
+    {"pair": "vertical-2", "A": "down", "B": "up", "reason": "A bowed head/eyes point down; B raised face and pupils point up."},
+    {"pair": "vertical-3", "A": "down", "B": "up", "reason": "A eyelids and nose angle downward; B face and pupils angle upward."},
+    {"pair": "vertical-4", "A": "up", "B": "ambiguous", "reason": "A raised face looks up; B horizontal side profile lacks definite up/down gaze."},
+    {"pair": "vertical-5", "A": "down", "B": "up", "reason": "A head and eyes drop downward; B eyes and nose tip lift upward."},
+    {"pair": "vertical-6", "A": "ambiguous", "B": "up", "reason": "A sideways face gives no definite vertical cue; B nose and eyes aim upward."},
+    {"pair": "vertical-7", "A": "up", "B": "up", "reason": "Both faces are tilted upward with pupils/nose aimed high."}
+  ]
+}
