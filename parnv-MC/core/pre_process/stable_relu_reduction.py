@@ -49,7 +49,14 @@ def _interval_affine_lower_bound(
         raise ValueError("Affine interval-bound dimensions do not match.")
     positive = np.maximum(matrix, 0.0)
     negative = np.minimum(matrix, 0.0)
-    return positive @ lower + negative @ upper
+    if not np.all(np.isfinite(matrix)) or not np.all(np.isfinite([lower, upper])) or np.any(lower > upper):
+        raise ValueError("Affine interval bounds must be finite and ordered.")
+    # Round conservatively for the stored float64 matrix. This does not tighten
+    # CROWN bounds; it prevents cancellation in the reconstruction shift itself.
+    result = positive @ lower + negative @ upper
+    magnitude = np.abs(matrix) @ np.maximum(np.abs(lower), np.abs(upper))
+    error = (2 * matrix.shape[1] + 4) * np.finfo(float).eps * magnitude
+    return np.nextafter(result - error, -np.inf)
 
 
 def _predecessor_bounds(
@@ -100,6 +107,8 @@ def reduce_stable_relu_neurons(
         raise ValueError("activation_margin must be non-negative")
 
     weights, biases = _as_float_matrices(network)
+    if not all(np.all(np.isfinite(a)) for a in weights + biases):
+        raise ValueError("Network parameters contain NaN or infinity.")
     hidden_count = len(weights) - 1
     if hidden_count <= 0:
         return network, {
@@ -149,6 +158,8 @@ def reduce_stable_relu_neurons(
             dtype=float,
         )
         width_before = int(current_bias.size)
+        if not np.all(np.isfinite([lower, upper])) or np.any(lower > upper):
+            raise ValueError("CROWN preactivation bounds must be finite and ordered.")
         if lower.size != width_before or upper.size != width_before:
             raise ValueError(
                 "CROWN bounds for hidden layer {} have widths ({}, {}), expected {}.".format(
@@ -205,7 +216,9 @@ def reduce_stable_relu_neurons(
                 lower=predecessor_lower,
                 upper=predecessor_upper,
             )
-            shift = np.maximum(0.0, float(activation_margin) - folded_lower)
+            shift = np.nextafter(np.maximum(0.0, float(activation_margin) - folded_lower), np.inf)
+            if not np.all(np.isfinite(shift)) or np.any(folded_lower + shift < 0.0):
+                raise ValueError("Reconstructed ReLUs could not be certified active.")
 
             if unstable_indices.size:
                 new_incoming = np.vstack((incoming[unstable_indices, :], folded_weight))

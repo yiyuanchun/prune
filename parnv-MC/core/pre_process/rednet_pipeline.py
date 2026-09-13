@@ -34,15 +34,25 @@ def check_input_output_equivalence(
         tolerance: float = 1e-5,
         seed: int = 0,
 ) -> dict[str, Any]:
+    if samples <= 0 or not np.isfinite(tolerance) or tolerance < 0:
+        raise ValueError("Equivalence checks require positive samples and a finite non-negative tolerance.")
     lower_bounds, upper_bounds = _input_bounds(original_network)
+    if not np.all(np.isfinite([lower_bounds, upper_bounds])) or np.any(np.asarray(lower_bounds) > upper_bounds):
+        raise ValueError("Equivalence input box must be finite and ordered.")
     rng = np.random.default_rng(seed)
     max_error = 0.0
+    errors = []
     worst_case: dict[str, Any] | None = None
     for sample_index in range(int(samples)):
         sample = _sample_input(lower_bounds, upper_bounds, rng)
         original_output = np.asarray(original_network.speedy_evaluate(sample), dtype=float)
         reduced_output = np.asarray(reduced_network.speedy_evaluate(sample), dtype=float)
+        if original_output.shape != reduced_output.shape or not original_output.size:
+            raise ValueError("Equivalence output dimensions differ or are empty.")
+        if not np.all(np.isfinite(original_output)) or not np.all(np.isfinite(reduced_output)):
+            raise ValueError("Non-finite network output in equivalence check.")
         error = float(np.max(np.abs(original_output - reduced_output))) if original_output.size else 0.0
+        errors.append(error)
         if error > max_error:
             max_error = error
             worst_case = {
@@ -56,6 +66,9 @@ def check_input_output_equivalence(
         "samples": int(samples),
         "tolerance": float(tolerance),
         "max_abs_error": float(max_error),
+        "mean_abs_error": float(np.mean(errors)),
+        "variance_abs_error": float(np.var(errors, ddof=0)),
+        "seed": int(seed),
         "passed": bool(max_error <= tolerance),
         "worst_case": worst_case,
     }
@@ -113,6 +126,14 @@ def prepare_rednet_nnet(
         biases=reduced_network.generate_biases(),
         metadata=getattr(reduced_network, "nnet_metadata", {}),
     )
+    # The verifier reads the serialized network, so check that exact artifact too.
+    reloaded = network_from_nnet_file(output_path.as_posix())
+    serialized_equivalence = check_input_output_equivalence(
+        original_network, reloaded, samples=equivalence_samples,
+        tolerance=equivalence_tolerance, seed=seed,
+    )
+    if not serialized_equivalence["passed"]:
+        raise RuntimeError("Serialized REDNet equivalence check failed: {}".format(serialized_equivalence))
 
     return {
         "output_nnet_file": output_path.as_posix(),
@@ -120,5 +141,6 @@ def prepare_rednet_nnet(
         "reduction_time_seconds": float(reduction_time),
         "preprocessing_time_seconds": float(time.perf_counter() - started),
         "reduction": reduction_report,
-        "equivalence": equivalence_report,
+        "equivalence_in_memory": equivalence_report,
+        "equivalence": serialized_equivalence,
     }

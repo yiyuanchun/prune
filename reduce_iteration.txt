@@ -1,0 +1,473 @@
+请仔细阅读当前项目代码后，对 CEGAR 验证流程进行修改。修改目标是减少 `cegar_iterations` 和昂贵的 Marabou 调用次数，从而降低整体神经网络验证时间。
+
+请先理解现有实现，不要直接重写整个流程。重点检查与以下逻辑相关的代码：
+
+- CEGAR 主循环
+- spurious counterexample 判断
+- refinement / undo merge
+- merge_log_stack
+- Marabou 调用
+- counterexample 在当前抽象网络和原始网络上的检查
+- 实验结果中 cegar_iterations、refinement_steps、marabou_calls、cegar_time_seconds 等统计项
+
+重点关注：
+`parnv-MC/core/cegar/raw_cegar.py`
+
+如果 `parnv-acasxu`、`parnv-MC-plane` 中存在相同或复制的 CEGAR 实现，请检查是否也需要同步修改，避免三个版本行为不一致。
+
+==================================================
+一、修改目标 1：Batch Refinement
+==================================================
+
+当前 refinement 的行为是：
+
+1. Marabou 在抽象网络上得到 SAT；
+2. 检查该 counterexample 在原始网络上是否真实违反性质；
+3. 如果不是，则判定为 spurious counterexample；
+4. 不断 undo 最近的 Merge；
+5. 一旦当前 spurious counterexample 在精化后的网络上消失，就立即停止 refinement；
+6. 马上重新调用 Marabou。
+
+这个策略可能导致：
+
+CE1 -> refinement -> Marabou
+CE2 -> refinement -> Marabou
+CE3 -> refinement -> Marabou
+...
+
+从而造成大量 `cegar_iterations` 和 Marabou 调用。
+
+现在修改为：
+
+【当前 spurious counterexample 消失后，不要立即停止 refinement，而是额外恢复 3 个 Merge。】
+
+具体要求：
+
+1. 保留当前“逐个 undo Merge，直到当前 spurious counterexample 消失”的逻辑。
+
+2. 当检测到：
+
+   `is_still_counterexample == False`
+
+   时，不要立即 return。
+
+3. 在 `merge_log_stack` 仍然非空的情况下，再额外执行最多 3 次 `undo_last_merge()`。
+
+4. 如果剩余 Merge 少于 3 个，则全部恢复即可。
+
+例如：
+
+原来：
+    undo merge 10
+    undo merge 9
+    counterexample 消失
+    -> 立即结束 refinement
+
+修改后：
+    undo merge 10
+    undo merge 9
+    counterexample 消失
+    undo merge 8
+    undo merge 7
+    undo merge 6
+    -> 结束本轮 batch refinement
+
+5. 所有额外 undo 的 Merge 也必须：
+   - 正确恢复网络权重和 bias；
+   - 正确更新 labels；
+   - 正确更新 mapping；
+   - 正确维护 merge_log_stack；
+   - 正确写入 refinement_log；
+   - 正确计入 refinement_steps。
+
+6. 建议不要直接把数字 3 散落在代码中。
+
+请定义一个清晰的参数，例如：
+
+    extra_refinement_merges = 3
+
+或者：
+
+    batch_refinement_extra_steps = 3
+
+如果适合现有函数接口，可以将它作为参数传给：
+
+    refine_by_undo_merge(...)
+
+默认值设为 3。
+
+7. 保证：
+   - 不会因为 merge_log_stack 为空而报错；
+   - 不会超过 max_refinement_steps；
+   - 如果设置了 max_refinement_steps，则“为消除当前 CE 所执行的 undo”和“额外 3 次 undo”都要计入该预算。
+
+==================================================
+二、修改目标 2：Refinement 后先执行 PGD，再决定是否调用 Marabou
+==================================================
+
+当前流程大致是：
+
+Marabou SAT
+    ↓
+得到 counterexample
+    ↓
+原始网络检查
+    ↓
+如果是 spurious CE
+    ↓
+refinement
+    ↓
+直接再次调用 Marabou
+
+请修改为：
+
+Marabou SAT
+    ↓
+spurious counterexample
+    ↓
+Batch Refinement
+    ↓
+对 refinement 后的当前网络执行 PGD 攻击
+    ↓
+PGD 是否找到违反性质的输入？
+    │
+    ├── 否
+    │    ↓
+    │  调用 Marabou
+    │    ↓
+    │  Marabou UNSAT
+    │      → VERIFIED
+    │
+    │  Marabou SAT
+    │      ↓
+    │  检查 SAT assignment 在原始网络上是否真实违反性质
+    │      ├── 是 → UNSAFE
+    │      └── 否 → spurious CE → Batch Refinement → PGD → ...
+    │
+    └── 是
+         ↓
+       将 PGD 找到的输入送入原始网络检查
+         │
+         ├── 原始网络也违反性质
+         │      → genuine counterexample
+         │      → UNSAFE
+         │      → 直接结束验证
+         │
+         └── 原始网络不违反性质
+                → 说明 PGD 找到的是抽象网络上的 spurious counterexample
+                → 不调用 Marabou
+                → 直接继续 Batch Refinement
+                → refinement 后再次运行 PGD
+                → 重复这一过程
+                → 直到 PGD 找不到反例，再调用 Marabou
+
+==================================================
+三、必须明确 PGD 在这里的角色
+==================================================
+
+PGD 只能作为低成本的 counterexample 搜索器。
+
+必须遵守：
+
+1. PGD 找不到反例：
+
+   不能说明网络安全。
+
+   因此不能返回 VERIFIED。
+
+   正确行为是：
+
+       PGD 未找到反例
+           ↓
+       调用 Marabou
+
+2. PGD 找到反例：
+
+   也不能直接认定原网络 UNSAFE。
+
+   必须在原始网络上重新执行该输入，并检查其是否真正满足 violation property。
+
+3. 只有：
+
+   PGD 找到 x*
+       +
+   x* 在 original_network 上确实违反 verification property
+
+   才能返回：
+
+       UNSAFE
+
+4. 如果：
+
+   PGD 找到 x*
+       +
+   x* 只在 abstract/current network 上违反性质
+       +
+   original network 不违反
+
+   则把它视为：
+
+       spurious counterexample
+
+   并继续 refinement。
+
+5. 最终的 VERIFIED 结论仍然只能由 sound verifier 给出，例如：
+
+       Marabou UNSAT
+
+PGD 不能作为 UNSAT / VERIFIED 的证明工具。
+
+==================================================
+四、PGD 实现要求
+==================================================
+
+请先检查项目当前是否已经存在：
+
+- PGD attack
+- adversarial attack
+- MNIST PGD
+- CIFAR10 PGD
+- projected gradient descent
+- torch-based adversarial search
+
+如果已经存在，请优先复用，不要重复实现。
+
+如果没有，则实现一个尽量独立、轻量的 PGD counterexample search 模块。
+
+要求：
+
+1. PGD 针对“当前 refinement 后的网络”进行攻击。
+
+2. 输入必须严格限制在 verification property 定义的输入区域内，例如：
+
+   x ∈ [lower_bound, upper_bound]
+
+每一次 PGD step 后都需要 projection。
+
+3. PGD 的优化目标必须和当前 property 对应，而不是简单使用分类 cross entropy。
+
+请根据当前项目中 verification property 的实际表达方式构造 violation objective。
+
+例如如果 property 最终转换为：
+
+    output[target] >= threshold
+
+则 PGD 应优化对应 output violation margin。
+
+如果当前项目对 adversarial property 已经进行了：
+    reduce_property_to_basic_form()
+
+请尽量复用转换后的 property 定义，保证 PGD 和 Marabou 检查的是同一个 verification property。
+
+4. PGD 找到候选输入后，应复用项目已有的 property 判断逻辑，例如：
+
+    is_satisfying_assignment(...)
+
+或：
+
+    _counterexample_violates_network(...)
+
+不要重新实现另一套性质判断。
+
+5. PGD 应至少支持当前实验使用的：
+   - MNIST
+   - CIFAR10
+
+6. PGD 参数请集中配置，例如：
+
+    pgd_steps
+    pgd_step_size
+    pgd_restarts
+
+不要在代码不同位置写死。
+
+建议先使用比较保守的默认值，例如：
+
+    pgd_steps = 40
+    pgd_restarts = 5
+
+step size 请根据输入上下界/epsilon合理设置。
+
+如果项目已有攻击参数规范，请沿用项目现有方式。
+
+==================================================
+五、避免无限循环
+==================================================
+
+加入 PGD 后尤其需要避免这种情况：
+
+PGD 找到 spurious CE
+    ↓
+refinement
+    ↓
+网络已经没有 Merge 可以恢复
+    ↓
+PGD 仍然找到 spurious CE
+    ↓
+无限循环
+
+因此必须增加终止保护：
+
+1. 如果 `merge_log_stack` 已经为空，则不能继续 refinement。
+
+2. 如果 PGD 找到 spurious CE，但已经无法进一步 refinement：
+
+   应转入 Marabou 验证，或者按照当前 CEGAR 逻辑返回合理的 UNKNOWN。
+
+请结合现有代码的 soundness 逻辑选择最合理方案。
+
+优先原则：
+
+    只要当前网络仍然可以交给 Marabou，
+    就优先调用 Marabou 得到最终结论。
+
+==================================================
+六、CEGAR iteration 的计数语义不要搞错
+==================================================
+
+`cegar_iterations` 应继续表示：
+
+    调用正式 verifier（Marabou）的 CEGAR iteration 数量
+
+不要把 PGD 的内部循环计入 `cegar_iterations`。
+
+例如：
+
+PGD -> refinement
+PGD -> refinement
+PGD -> refinement
+Marabou
+
+这一整段中，PGD 的三次搜索不应该把 `cegar_iterations` 增加 3。
+
+请保持现有实验统计字段的语义稳定。
+
+==================================================
+七、Soundness 要求
+==================================================
+
+这是最重要的约束。
+
+修改后必须保持验证 soundness：
+
+1. PGD 只能提前发现 UNSAFE，不能用于证明 VERIFIED。
+
+2. UNSAFE 必须有 original network 上的 genuine counterexample。
+
+3. VERIFIED 必须来自 Marabou UNSAT 或项目现有的 sound early-verification mechanism。
+
+4. Batch refinement 只能通过 undo Merge 将抽象网络向原网络方向精化，不能引入新的 over-approximation。
+
+5. 不允许为了减少 CEGAR iteration 而改变最终性质判定语义。
+
+==================================================
+十、兼容已有流程
+==================================================
+
+不要破坏已有：
+
+- CROWN precheck
+- Dead ReLU pruning
+- REDNet preprocessing（如果当前分支已经加入）
+- inc/dec preprocessing
+- LP-Merge
+- merge_log
+- mapping
+- refinement_log
+- .nnet 输出
+- Marabou query 输出
+- batch_verify_mnist_cifar10_inputs.py
+- MNIST/CIFAR10 property 构造
+- 实验 CSV 输出
+
+修改应尽可能局部化。
+
+==================================================
+十一、代码实现前请先分析
+==================================================
+
+在修改代码之前，请先：
+
+1. 阅读相关源码。
+2. 找到：
+   - CEGAR while 循环；
+   - `refine_by_undo_merge()`；
+   - `undo_last_merge()`；
+   - counterexample 判断；
+   - Marabou 调用位置；
+   - 当前项目是否已有 PGD。
+3. 给出准备修改哪些文件、哪些函数，以及原因。
+4. 然后再实施修改。
+
+不要凭函数名猜实现。
+
+==================================================
+十二、修改完成后必须进行检查
+==================================================
+
+至少验证以下场景：
+
+Case 1：
+CROWN 直接 UNSAT
+→ 不应进入 PGD/Marabou CEGAR。
+
+Case 2：
+Marabou 第一次 UNSAT
+→ VERIFIED。
+
+Case 3：
+Marabou 找到 genuine counterexample
+→ UNSAFE。
+
+Case 4：
+Marabou 找到 spurious counterexample
+→ batch refinement
+→ 当前 CE 消失
+→ 额外 undo 3 个 Merge。
+
+Case 5：
+refinement 后 PGD 找不到反例
+→ 调用 Marabou。
+
+Case 6：
+refinement 后 PGD 找到 genuine counterexample
+→ 不再调用 Marabou
+→ UNSAFE。
+
+Case 7：
+refinement 后 PGD 找到 spurious counterexample
+→ 不调用 Marabou
+→ 再次 refinement。
+
+Case 8：
+剩余 Merge 少于 3 个
+→ 正常恢复剩余 Merge
+→ 不报错。
+
+Case 9：
+merge_log_stack 已空
+→ 不得进入无限 PGD/refinement 循环。
+
+Case 10：
+设置 max_refinement_steps
+→ batch refinement 不得突破预算。
+
+最后请运行项目现有测试；如果没有相关测试，请补充最小测试。
+
+==================================================
+十三、最终向我汇报
+==================================================
+
+修改完成后，请告诉我：
+
+1. 修改了哪些文件；
+2. 修改了哪些核心函数；
+3. 新 CEGAR 控制流是什么；
+4. PGD 是如何定义 objective 和输入约束的；
+5. Batch refinement 如何实现；
+6. 如何保证 PGD 不影响验证 soundness；
+7. 新增了哪些统计字段；
+8. 运行了哪些测试；
+9. 是否还存在潜在边界情况或风险。
+
+不要只给出代码 diff，要解释修改后的完整执行流程。

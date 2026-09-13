@@ -13,6 +13,11 @@ from typing import Any
 
 import numpy as np
 
+from core.cegar.pgd_search import (
+    PGDConfig, DEFAULT_EXTRA_REFINEMENT_MERGES, search_counterexample,
+    add_search_arguments, search_options,
+)
+
 from core.nnet.read_nnet import (
     _build_network_from_weights_and_biases,
     network_from_nnet_file,
@@ -974,7 +979,16 @@ def _counterexample_violates_network(
         tolerance: float = 1e-7,
 ) -> tuple[bool, list[float]]:
     del tolerance
+    expected = set(range(len(network.layers[0].nodes)))
+    if set(counterexample) != expected:
+        raise ValueError("Counterexample input is incomplete")
+    for i, bounds in property_spec['input']:
+        value = counterexample[int(i)]
+        if not np.isfinite(value) or not bounds['Lower'] <= value <= bounds['Upper']:
+            raise ValueError("Counterexample lies outside the property input box")
     output = np.asarray(network.speedy_evaluate(counterexample), dtype=float)
+    if not np.all(np.isfinite(output)):
+        raise ValueError("Nonfinite counterexample output")
     _, variables2nodes = network.get_variables(property_type=property_spec.get("type", "basic"))
     violates = is_satisfying_assignment(
         network=network,
@@ -1056,46 +1070,45 @@ def refine_by_undo_merge(
         tolerance: float = 1e-7,
         max_steps: int | None = None,
         state: RawCegarState | None = None,
+        extra_refinement_merges: int = DEFAULT_EXTRA_REFINEMENT_MERGES,
 ) -> dict[str, Any]:
     if state is None:
         raise ValueError("refine_by_undo_merge requires the RawCegarState used by this flow")
+    if extra_refinement_merges < 0 or (max_steps is not None and max_steps < 0):
+        raise ValueError("Refinement budgets must be non-negative")
     del current_network
     refined_steps = []
-    while merge_log_stack:
+    eliminated = False
+    extra_steps = 0
+    is_still_counterexample = True
+    while merge_log_stack and (max_steps is None or len(refined_steps) < max_steps):
+        is_extra = eliminated
         refinement_record = undo_last_merge(
-            current_network=None,
-            merge_log_stack=merge_log_stack,
-            labels=labels,
-            mapping=mapping,
-            state=state,
+            current_network=None, merge_log_stack=merge_log_stack,
+            labels=labels, mapping=mapping, state=state,
         )
         current_network_after_undo = build_network_from_state(state)
         is_still_counterexample = is_counterexample_on_current_network(
-            current_network=current_network_after_undo,
-            counterexample=counterexample,
-            property_spec=property_spec,
-            tolerance=tolerance,
+            current_network=current_network_after_undo, counterexample=counterexample,
+            property_spec=property_spec, tolerance=tolerance,
         )
         refinement_record["is_still_counterexample"] = bool(is_still_counterexample)
+        refinement_record["extra_refinement"] = is_extra
         refined_steps.append(refinement_record)
+        if is_extra:
+            extra_steps += 1
         if not is_still_counterexample:
-            return {
-                "success": True,
-                "partial": False,
-                "refinement_exhausted": False,
-                "steps": refined_steps,
-            }
-        if max_steps is not None and len(refined_steps) >= max_steps:
-            return {
-                "success": False,
-                "partial": True,
-                "refinement_exhausted": False,
-                "steps": refined_steps,
-            }
+            eliminated = True
+        if eliminated and extra_steps >= extra_refinement_merges:
+            break
+    success = eliminated and not is_still_counterexample
+    budget_exhausted = max_steps is not None and len(refined_steps) >= max_steps
     return {
-        "success": False,
-        "partial": False,
-        "refinement_exhausted": True,
+        "success": success,
+        "partial": not success and bool(merge_log_stack) and budget_exhausted,
+        "refinement_exhausted": not success and not merge_log_stack,
+        "budget_exhausted": budget_exhausted,
+        "extra_steps": extra_steps,
         "steps": refined_steps,
     }
 
@@ -1117,6 +1130,14 @@ def _finalize(
         final_network: Any,
         counterexample: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    final_result.update(cegar_log.get("search_statistics", {
+        "pgd_calls": 0, "pgd_time_seconds": 0.0, "pgd_candidates_found": 0,
+        "pgd_genuine_counterexamples": 0, "pgd_spurious_counterexamples": 0,
+        "batch_refinement_rounds": 0, "extra_refinement_steps": 0,
+    }))
+    final_result["cegar_iterations"] = final_result.get("iterations", 0)
+    final_result["formal_verifier_calls"] = final_result.get("iterations", 0)
+    final_result["marabou_calls"] = final_result.get("iterations", 0)
     write_nnet(final_network if state is None else state, output_dir / "refined_network_final.nnet")
     if state is not None:
         _write_stage_logs(state, output_dir, cegar_log=cegar_log)
@@ -1210,7 +1231,12 @@ def cegar_verify_with_marabou(
         marabou_timeout: int | None = None,
         tolerance: float = 1e-7,
         property_id: str | None = None,
+        extra_refinement_merges: int = DEFAULT_EXTRA_REFINEMENT_MERGES,
+        pgd_config: PGDConfig | None = None,
 ) -> dict[str, Any]:
+    pgd_config = pgd_config or PGDConfig()
+    if extra_refinement_merges < 0 or (max_refinement_steps is not None and max_refinement_steps < 0):
+        raise ValueError("Refinement budgets must be non-negative")
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
@@ -1241,6 +1267,17 @@ def cegar_verify_with_marabou(
         "iterations": [],
         "final_result": None,
         "final_counterexample": None,
+    }
+    search_stats = {
+        "pgd_calls": 0, "pgd_time_seconds": 0.0,
+        "pgd_candidates_found": 0, "pgd_genuine_counterexamples": 0,
+        "pgd_spurious_counterexamples": 0, "batch_refinement_rounds": 0,
+        "extra_refinement_steps": 0,
+    }
+    cegar_log["search_statistics"] = search_stats
+    cegar_log["pgd_searches"] = []
+    cegar_log["refinement_policy"] = {
+        "extra_refinement_merges": extra_refinement_merges, "pgd": pgd_config.to_dict(),
     }
 
     crown_start = time.perf_counter()
@@ -1294,36 +1331,61 @@ def cegar_verify_with_marabou(
 
     iteration = 0
     total_refinement_steps = 0
+    run_pgd = False
     while True:
-        iteration += 1
         current_network = build_network_from_state(state)
-        current_nnet_file = output_path / "abstract_iter_{}.nnet".format(iteration)
-        write_nnet(state, current_nnet_file)
-        query_path = output_path / "abstract_iter_{}.query".format(iteration)
-        _print_to_console(
-            "[CEGAR][Marabou] property={} iteration={} network={} query={} structure={}".format(
-                property_id,
-                iteration,
-                current_nnet_file,
-                query_path,
-                _network_structure_for_log(current_network),
+        counterexample_source = "verifier"
+        if run_pgd:
+            search_stats["pgd_calls"] += 1
+            pgd_result = search_counterexample(
+                current_network, test_property, pgd_config,
+                seed_offset=search_stats["pgd_calls"]-1,
             )
-        )
-        verify_result = verify_network_with_marabou(
-            network=current_network,
-            test_property=test_property,
-            timeout=marabou_timeout,
-            save_query_path=query_path,
-        )
-        iteration_log: dict[str, Any] = {
-            "iteration": iteration,
-            "current_nnet_file": current_nnet_file.name,
-            "marabou_status": verify_result["status"],
-            "marabou_runtime": verify_result["marabou_runtime"],
-            "raw_solver_output": verify_result["raw_solver_output"],
-            "refinement_steps": [],
-        }
-        cegar_log["iterations"].append(iteration_log)
+            search_stats["pgd_time_seconds"] += pgd_result["time_seconds"]
+            search_record = {
+                **pgd_result, "search_index": search_stats["pgd_calls"],
+                "after_verifier_iteration": iteration, "source": "pgd", "refinement_steps": [],
+            }
+            cegar_log["pgd_searches"].append(search_record)
+            print("[CEGAR][PGD] search={} found={} elapsed={:.4f}s".format(
+                search_stats["pgd_calls"], pgd_result["found"], pgd_result["time_seconds"]), flush=True)
+            if pgd_result["found"]:
+                search_stats["pgd_candidates_found"] += 1
+                counterexample_source = "pgd"
+                verify_result = {"status": "sat", "counterexample": pgd_result["counterexample"]}
+            # PGD can only be re-enabled after an actual undo: no zero-progress cycle.
+            run_pgd = False
+        if counterexample_source == "verifier":
+            iteration += 1
+            current_nnet_file = output_path / "abstract_iter_{}.nnet".format(iteration)
+            write_nnet(state, current_nnet_file)
+            query_path = output_path / "abstract_iter_{}.query".format(iteration)
+            _print_to_console(
+                "[CEGAR][Marabou] property={} iteration={} network={} query={} structure={}".format(
+                    property_id,
+                    iteration,
+                    current_nnet_file,
+                    query_path,
+                    _network_structure_for_log(current_network),
+                )
+            )
+            verify_result = verify_network_with_marabou(
+                network=current_network,
+                test_property=test_property,
+                timeout=marabou_timeout,
+                save_query_path=query_path,
+            )
+            iteration_log: dict[str, Any] = {
+                "iteration": iteration,
+                "current_nnet_file": current_nnet_file.name,
+                "marabou_status": verify_result["status"],
+                "marabou_runtime": verify_result["marabou_runtime"],
+                "raw_solver_output": verify_result["raw_solver_output"],
+                "refinement_steps": [],
+            }
+            cegar_log["iterations"].append(iteration_log)
+        else:
+            iteration_log = search_record
 
         if verify_result["status"] == "unsat":
             final_result = {
@@ -1361,8 +1423,11 @@ def cegar_verify_with_marabou(
             iteration_log["original_network_output"] = original_output
             iteration_log["current_network_output"] = current_output
             if original_violates:
+                if counterexample_source == "pgd":
+                    search_stats["pgd_genuine_counterexamples"] += 1
                 counterexample = {
                     "input": counterexample_input,
+                    "source": counterexample_source,
                     "original_network_output": original_output,
                     "current_network_output": current_output,
                     "counterexample_type": "genuine",
@@ -1383,21 +1448,27 @@ def cegar_verify_with_marabou(
                 return _finalize(output_path, state, final_result, cegar_log, state, counterexample)
 
             iteration_log["counterexample_type"] = "spurious"
-            remaining_refinement_budget = None
-            if max_refinement_steps is not None:
-                remaining_refinement_budget = max(int(max_refinement_steps) - total_refinement_steps, 0)
-                if remaining_refinement_budget <= 0:
-                    final_result = {
-                        "result": "UNKNOWN",
-                        "query_result": "UNKNOWN",
-                        "reason": "maximum refinement steps reached before eliminating spurious counterexample",
-                        "iterations": iteration,
-                        "total_refinement_steps": total_refinement_steps,
-                        "dead_relu_pruned": pruning_report.get("total_pruned", 0),
-                        "elapsed_seconds": time.perf_counter() - started,
-                    }
-                    cegar_log["final_result"] = "UNKNOWN"
-                    return _finalize(output_path, state, final_result, cegar_log, state)
+            if counterexample_source == "pgd":
+                search_stats["pgd_spurious_counterexamples"] += 1
+            remaining_refinement_budget = (
+                None if max_refinement_steps is None
+                else max(int(max_refinement_steps) - total_refinement_steps, 0)
+            )
+            if not state.merge_log_stack or remaining_refinement_budget == 0:
+                if counterexample_source == "pgd":
+                    iteration_log["fallback_reason"] = "no refinement capacity; call formal verifier"
+                    continue
+                final_result = {
+                    "result": "UNKNOWN",
+                    "query_result": "UNKNOWN",
+                    "reason": "no remaining Merge or refinement budget after formal SAT",
+                    "iterations": iteration,
+                    "total_refinement_steps": total_refinement_steps,
+                    "dead_relu_pruned": pruning_report.get("total_pruned", 0),
+                    "elapsed_seconds": time.perf_counter() - started,
+                }
+                cegar_log["final_result"] = "UNKNOWN"
+                return _finalize(output_path, state, final_result, cegar_log, state)
             refinement_result = refine_by_undo_merge(
                 current_network=current_network,
                 counterexample=counterexample_input,
@@ -1408,11 +1479,15 @@ def cegar_verify_with_marabou(
                 tolerance=tolerance,
                 max_steps=remaining_refinement_budget,
                 state=state,
+                extra_refinement_merges=extra_refinement_merges,
             )
             total_refinement_steps += len(refinement_result["steps"])
+            search_stats["batch_refinement_rounds"] += bool(refinement_result["steps"])
+            search_stats["extra_refinement_steps"] += refinement_result["extra_steps"]
             iteration_log["refinement_steps"] = refinement_result["steps"]
             _write_stage_logs(state, output_path, cegar_log=cegar_log)
-            if refinement_result["success"]:
+            if refinement_result["steps"]:
+                run_pgd = pgd_config.enabled
                 continue
             final_result = {
                 "result": "UNKNOWN",
@@ -1452,6 +1527,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-refinement-steps", type=int, default=None)
     parser.add_argument("--marabou-timeout", type=int, default=None)
     parser.add_argument("--tolerance", type=float, default=1e-7)
+    add_search_arguments(parser)
     return parser.parse_args()
 
 
@@ -1465,6 +1541,7 @@ def main() -> None:
         marabou_timeout=args.marabou_timeout,
         tolerance=args.tolerance,
         property_id=args.property_id,
+        **search_options(args),
     )
     print(json.dumps(_to_jsonable(result), indent=2, sort_keys=True))
 
