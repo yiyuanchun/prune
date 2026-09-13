@@ -1331,7 +1331,7 @@ def cegar_verify_with_marabou(
 
     iteration = 0
     total_refinement_steps = 0
-    run_pgd = False
+    run_pgd = pgd_config.enabled
     while True:
         current_network = build_network_from_state(state)
         counterexample_source = "verifier"
