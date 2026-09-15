@@ -1,0 +1,479 @@
+你现在需要在我的远程服务器上，对当前神经网络验证项目进行一次严格的 B3 对照实验。
+请先完整阅读项目代码，并阅读我提供的 REDNet / stable ReLU reduction 论文。对于“Stable active ReLU → affine contribution folding → reconstruct fewer stable ReLUs”的实现，必须以论文方法为依据，不要自行设计一个与论文不一致的近似版本。
+==================================================
+一、远程服务器环境
+==================================================
+服务器 SSH 信息：
+主机：192.168.0.239
+端口：22
+用户名：test
+密码：rise1007
+
+项目目录：
+/home/test/yiyuanchun/Prune-v2
+Conda 环境：
+conda activate alpha-beta-crown
+待验证 MNIST 全连接 ReLU 网络：
+/home/test/yiyuanchun/Prune-v2/data/models/mnist/mnist_fc_relu_64x3.onnx
+
+本次实验：
+- 数据集：MNIST
+- 扰动范数：L∞
+- 扰动半径 epsilon = 0.02
+- 每个流程验证 30 张图片
+- 两个流程必须使用完全相同的 30 个 MNIST 样本
+- 两个流程使用相同的数据集 split、相同 property 构造方式、相同 Marabou timeout、相同 refinement 配置
+- 除实验方法本身以外，其余配置必须保持一致
+
+首先检查当前项目已有的 MNIST batch 验证代码和参数，不要重新实现已经存在的功能。
+
+==================================================
+二、实验目的
+==================================================
+
+本实验用于验证：
+REDNet 的 exact network reduction 是否能够与当前 NARv-like CEGAR 方法互补，并进一步降低全连接 ReLU 神经网络的验证时间。
+
+需要运行两个独立流程：
+流程 1：REDNet + NARv-like CEGAR
+流程 2：当前 main 分支已有的 -par 流程
+
+两个流程各运行一个独立的后台进程。
+不要串行执行两个实验。
+==================================================
+三、流程 1：REDNet + NARv-like CEGAR
+==================================================
+
+流程 1 的完整执行顺序必须为：
+
+Original FC ReLU Network N
+        │
+        │ Property P 对应的输入区间
+        ↓
+      CROWN
+        │
+        ├── Stable inactive ReLU
+        │        ↓
+        │      exact deletion
+        │
+        └── Stable active ReLU
+                 ↓
+        affine contribution folding
+                 ↓
+        reconstruct fewer stable ReLUs
+                 ↓
+             REDNet N_R
+
+要求：
+
+N_R(x) = N(x), ∀x ∈ P
+
+也就是说 REDNet 阶段必须是 exact reduction，
+不能引入 abstraction error。
+
+然后：
+
+REDNet N_R
+        ↓
+当前项目的 NARv-like CEGAR
+        ↓
+inc/dec preprocessing
+        ↓
+Merge
+        ↓
+Marabou
+        ↓
+如果得到 counterexample：
+        ↓
+在原始/具体网络上判断是否为真实反例
+        ↓
+如果是 spurious counterexample：
+        ↓
+refinement
+        ↓
+继续验证
+
+注意：
+
+1. Stable inactive ReLU 删除继续使用当前项目已有的 CROWN bound。
+2. Stable active ReLU reduction 必须依据我提供的 REDNet 论文实现。
+3. 如果项目中已经存在 stable-active folding/reconstruction 代码，请先审查正确性，不要重复实现。
+4. 如果代码存在 bug，请修改。
+5. 必须保证 REDNet reduction 后网络与 reduction 前网络在当前 property 输入区间内保持等价。
+6. 不允许把 approximate abstraction 当作 REDNet exact reduction。
+
+==================================================
+四、流程 2：Baseline，即当前 main 分支 -par 流程
+==================================================
+
+流程 2 必须尽量保持 GitHub 仓库 main 分支当前已有的 -par 行为，不加入 stable-active reconstruction。
+
+GitHub：
+https://github.com/yiyuanchun/prune
+
+流程应为：
+Original FC ReLU Network N
+        │
+        │ Property P
+        ↓
+      CROWN
+        │
+        ↓
+Stable inactive ReLU detection
+        │
+        ↓
+exact deletion / dead-ReLU pruning
+        │
+        ↓
+当前 NARv-like CEGAR
+        ↓
+inc/dec preprocessing
+        ↓
+Merge
+        ↓
+Marabou
+        ↓
+spurious counterexample
+        ↓
+refinement
+
+也就是说：
+
+流程 2 = 当前项目 main 分支现有 -par 流程
+
+流程 2 绝对不要加入：
+
+Stable active ReLU
+→ affine contribution folding
+→ reconstruct fewer stable ReLUs
+
+否则失去 baseline 意义。
+
+==================================================
+五、30 个样本的要求
+==================================================
+
+两个实验必须验证完全相同的 30 个 MNIST 样本。
+优先使用：
+sample_index = 0 ~ 29
+但需要沿用项目当前 batch 验证程序的样本过滤规则。
+如果项目当前逻辑会跳过“原始模型已经分类错误”的样本，则必须：
+- 两个流程使用完全相同的有效样本集合；
+- CSV 中记录实际 sample_index；
+- 不允许流程 1 和流程 2 最终使用不同的 30 张图片。
+如果需要获得 30 个“原始模型分类正确”的样本，则继续向后扫描 MNIST，直到收集满 30 个，并将这 30 个 sample_index 固定下来供两个流程共同使用。
+请把最终使用的 30 个 sample index 单独保存到：
+experiment_samples.json
+保证实验可复现。
+==================================================
+六、流程 1 CSV 输出要求
+==================================================
+
+流程 1 必须生成独立 CSV，例如：
+results/b3_rednet_narv_eps002.csv
+每一行对应一个 MNIST property / sample。
+至少包含以下字段：
+sample_index
+property_id
+verification_result
+允许值至少区分：
+VERIFIED / UNSAFE / TIMEOUT / UNKNOWN / ERROR
+query_result
+例如：
+SAT / UNSAT / TIMEOUT
+total_verification_time_seconds
+crown_time_seconds
+rednet_reduction_time_seconds
+cegar_time_seconds
+original_relu_count
+stable_inactive_relu_count
+stable_inactive_removed_count
+stable_active_relu_count
+stable_active_eliminated_count
+reconstructed_stable_relu_count
+relu_count_after_rednet
+total_relu_reduction_count
+relu_reduction_ratio
+cegar_iterations
+refinement_steps
+equivalence_sample_count
+equivalence_output_abs_error_mean
+equivalence_output_abs_error_variance
+equivalence_output_abs_error_max
+equivalence_passed
+
+其中最重要的是：
+
+1. 整个验证时间
+2. 验证结论
+3. CROWN 判定并删除了多少个 stable inactive ReLU
+4. stable-active reconstruction 又减少了多少个 ReLU
+5. REDNet 前后网络的输出变化
+
+==================================================
+七、REDNet 前后输出变化的计算方式
+==================================================
+
+这一部分必须严格统一，避免得到没有意义的数据。
+
+在每个 property 的输入区域 P 内随机采样若干输入，例如：
+
+128 个样本
+
+对于每个输入 x：
+
+y_original = N(x)
+y_rednet   = N_R(x)
+
+定义每个采样点的输出误差：
+
+e(x) = max_i |y_original_i - y_rednet_i|
+
+也就是输出向量的 L∞ absolute error。
+
+对全部采样点的 e(x) 计算：
+
+mean_error
+variance_error
+max_error
+
+CSV 中记录：
+equivalence_output_abs_error_mean
+equivalence_output_abs_error_variance
+equivalence_output_abs_error_max
+
+注意：
+
+不要计算 signed difference 的均值，因为正负误差会抵消。
+必须计算 absolute error。
+理论上 REDNet 是 exact reduction，所以这些误差应非常接近浮点误差，例如：
+
+10^-6 ~ 10^-12
+具体阈值根据当前 float 精度确定。
+如果误差明显偏大：
+不要继续跑正式实验。
+必须先排查 REDNet 实现是否存在错误。
+
+==================================================
+八、流程 2 CSV 输出要求
+==================================================
+
+流程 2 生成独立 CSV，例如：
+results/b3_baseline_par_eps002.csv
+至少包含：
+sample_index
+property_id
+verification_result
+query_result
+total_verification_time_seconds
+crown_time_seconds
+crown_stable_inactive_relu_count
+crown_removed_relu_count
+original_relu_count
+relu_count_after_crown_pruning
+cegar_iterations
+refinement_steps
+
+流程 2 不需要记录：
+
+stable_active_eliminated_count
+reconstructed_stable_relu_count
+REDNet equivalence error
+
+因为流程 2 根本不执行 stable-active reconstruction。
+
+==================================================
+九、两个后台进程
+==================================================
+
+最终必须同时启动两个后台进程。
+例如使用：
+
+nohup ... > logs/b3_rednet_narv.log 2>&1 &
+
+nohup ... > logs/b3_baseline_par.log 2>&1 &
+
+但请根据项目实际入口脚本选择正确命令。
+要求：
+流程 1：
+独立 PID
+独立日志
+独立 CSV
+独立 results 目录
+
+流程 2：
+独立 PID
+独立日志
+独立 CSV
+独立 results 目录
+
+启动完成后必须告诉我：
+流程 1 PID
+流程 2 PID
+
+以及：
+流程 1日志路径
+流程 2日志路径
+
+流程 1 CSV路径
+流程 2 CSV路径
+==================================================
+十、并行实验的公平性
+==================================================
+
+两个后台实验同时运行可能存在 CPU / GPU / 内存资源竞争。
+
+因此启动前请检查：
+
+nvidia-smi
+free -h
+lscpu
+
+并记录硬件信息。
+
+如果 CROWN 使用 GPU，需要确认两个进程是否会争用同一张 GPU。
+
+不要因为资源竞争导致实验比较失真。
+
+如果服务器只有一张 GPU：
+
+仍然按照我的要求启动两个后台进程，
+但是必须在实验说明中记录：
+
+“两个流程并行运行，因此绝对 wall-clock time 受到资源竞争影响。”
+
+后续我可能再进行单独重复实验。
+
+不要偷偷改变我的并行运行要求。
+
+==================================================
+十一、代码修改原则
+==================================================
+
+在运行之前请先仔细审查代码。
+
+重点检查：
+
+1. MNIST 64x3 ONNX 网络是否能够正确转换/读取。
+2. property 构造是否正确：
+   epsilon = 0.02。
+3. CROWN bound 是否针对当前 property 输入区间计算。
+4. stable inactive 判断是否正确。
+5. stable active 判断是否正确。
+6. stable active reconstruction 是否严格保持等价。
+7. reconstruction 后权重矩阵、bias 和下一层连接维度是否正确。
+8. `.onnx` / `.nnet` 转换是否会改变输出。
+9. NARv-like CEGAR 是否真正接收到 REDNet 后的网络，而不是又重新读取原始网络。
+10. genuine/spurious counterexample 判断是否仍然以正确的 concrete network 为基准。
+11. refinement 后的网络是否仍然符合当前 reduction / abstraction 映射关系。
+12. CSV 中统计的时间范围是否一致。
+
+禁止为了让程序“跑通”而吞掉异常。
+
+如果出现 ERROR：
+
+CSV 要记录 ERROR，
+日志中保留完整 traceback。
+
+==================================================
+十二、不要破坏现有 main baseline
+==================================================
+
+流程 2 是实验 baseline。
+
+因此不要直接修改 main 分支现有 -par 行为，从而使 baseline 和以前不一致。
+
+推荐方式：
+
+- 保留 main 当前 baseline；
+- 为流程 1 使用单独 branch / 单独入口；
+- 或使用 feature flag 显式控制 REDNet stable-active reduction。
+
+例如：
+
+--enable-rednet-stable-active
+
+默认关闭。
+
+baseline：
+
+enable_rednet_stable_active = False
+
+增强方法：
+
+enable_rednet_stable_active = True
+
+两个流程除了该变量以外，其余参数尽可能相同。
+
+==================================================
+十三、先做小规模 smoke test
+==================================================
+
+不要直接启动 30 × 2 个正式任务。
+
+先分别选择同一个 MNIST 样本跑：
+
+流程 1：1 张
+流程 2：1 张
+
+检查：
+
+1. 两个流程均可以启动。
+2. epsilon 确实为 0.02。
+3. CROWN bound 正常。
+4. 流程 1 的 REDNet reduction 正常。
+5. REDNet 前后随机输入输出误差接近 0。
+6. Marabou 能正常运行。
+7. CSV 字段完整。
+8. 日志无 traceback。
+
+smoke test 成功后，再正式启动两个 30-image 后台进程。
+
+==================================================
+十四、运行后不要等待实验全部结束
+==================================================
+
+正式实验可能耗时很长。
+
+成功启动两个后台进程以后即可停止当前交互任务，不需要一直等待 30 张图片全部验证结束。
+
+但是在结束之前必须执行：
+
+ps / pgrep
+
+确认两个后台进程仍然存活。
+
+同时检查两个日志已经开始写入内容。
+
+最后向我汇报：
+
+1. 修改了哪些文件。
+2. 为什么修改。
+3. 流程 1 的完整执行链。
+4. 流程 2 的完整执行链。
+5. smoke test 结果。
+6. 两个后台 PID。
+7. 两个日志路径。
+8. 两个 CSV 路径。
+9. 实际使用的 30 个 sample_index 保存位置。
+10. 当前已经运行到哪一个 sample。
+11. 是否检测到 GPU/CPU 资源竞争。
+12. 是否存在任何尚未解决的问题。
+
+==================================================
+十五、实验正确性优先级
+==================================================
+
+优先级如下：
+
+1. Soundness / correctness
+2. 两种流程严格可比
+3. 网络规模统计准确
+4. 输出等价性检查准确
+5. 实验可复现
+6. 最后才是运行速度
+
+如果发现 REDNet reconstruction 无法证明/保持 exact equivalence，
+不要继续跑正式实验，也不要用 approximate reduction 替代。
+
+先修复并告诉我具体问题。
