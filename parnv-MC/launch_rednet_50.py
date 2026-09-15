@@ -23,7 +23,7 @@ def code_hashes():
             if not {'__pycache__', 'results', '.git'}.intersection(p.relative_to(ROOT).parts)}
 
 
-def prepare(run, commit, base_manifest=None):
+def prepare(run, commit, base_manifest=None, save_artifacts=False):
     if run.exists():
         raise FileExistsError('Refusing to overwrite experiment directory: ' + str(run))
     base = json.loads((base_manifest or ROOT / 'experiment_samples.json').read_text())
@@ -44,10 +44,11 @@ def prepare(run, commit, base_manifest=None):
         index += 1
     run.mkdir(parents=True)
     hashes = code_hashes()
-    for name in hashes:
-        target = run / 'audit/source' / name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(ROOT / name, target)
+    if save_artifacts:
+        for name in hashes:
+            target = run / 'audit/source' / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / name, target)
     dump(run / 'audit/source_hashes.json', hashes)
     dump(run / 'sample_indices.json', dict(sample_count=50, dataset_split=base['dataset_split'],
          sample_indices=selected, skipped_indices=skipped, labels=labels))
@@ -55,16 +56,17 @@ def prepare(run, commit, base_manifest=None):
         tag = format(epsilon, 'g').replace('.', '')
         manifest = dict(base, epsilon=epsilon, sample_count=50, sample_indices=selected,
                         skipped_indices=skipped, marabou_timeout_seconds=3600,
-                        source_commit=commit, experiment='rednet_50_initial_pgd')
+                        source_commit=commit, experiment='rednet_50_progressive_merge')
         dump(run / ('samples_eps' + tag + '.json'), manifest)
-        for i in selected:
-            _, _, prop, pid = property_for(manifest, i)
-            dump(run / 'properties' / (pid + '.json'), prop)
+        if save_artifacts:
+            for i in selected:
+                _, _, prop, pid = property_for(manifest, i)
+                dump(run / 'properties' / (pid + '.json'), prop)
     print(json.dumps(dict(run_root=str(run), sample_indices=selected, skipped_indices=skipped,
                          source_files=len(hashes), source_commit=commit)), flush=True)
 
 
-def launch(run, smoke):
+def launch(run, smoke, save_artifacts=False):
     hashes = json.loads((run / 'audit/source_hashes.json').read_text())
     assert code_hashes() == hashes, 'Source changed since preparation; use a fresh experiment directory'
     manifests = [run / ('samples_eps' + format(eps, 'g').replace('.', '') + '.json') for eps in RADII]
@@ -103,6 +105,9 @@ def launch(run, smoke):
                    '--route', 'rednet', '--samples', str(manifest), '--output', str(output)]
         if smoke:
             command += ['--limit', '1', '--smoke-direct-solver']
+        if smoke or save_artifacts:
+            # The smoke gate reads the direct-solver JSON before allowing full.
+            command += ['--save-artifacts']
         with log.open('x') as stream:
             process = subprocess.Popen(command, cwd=ROOT / 'parnv-MC', env=env,
                 stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.STDOUT, start_new_session=True)
@@ -119,11 +124,13 @@ def main():
     parser.add_argument('--source-commit', default='unspecified')
     parser.add_argument('--base-manifest', type=Path, default=None,
                         help='Base configuration with model/data paths for this server')
+    parser.add_argument('--save-artifacts', action='store_true',
+                        help='Keep source/property snapshots during prepare, or detailed full-run outputs')
     args = parser.parse_args()
     if args.phase == 'prepare':
-        prepare(args.run_root.resolve(), args.source_commit, args.base_manifest)
+        prepare(args.run_root.resolve(), args.source_commit, args.base_manifest, args.save_artifacts)
     else:
-        launch(args.run_root.resolve(), args.phase == 'smoke')
+        launch(args.run_root.resolve(), args.phase == 'smoke', args.save_artifacts)
 
 
 if __name__ == '__main__':

@@ -1,0 +1,1105 @@
+请修改当前项目：
+
+重点代码目录：
+`parnv-MC/`
+
+重点关注：
+`parnv-MC/core/cegar/raw_cegar.py`
+
+请先完整阅读当前 CEGAR、inc/dec preprocessing、LP Merge、random test、refinement 相关实现，再进行修改。不要在没有理解当前控制流和数据结构的情况下直接重构。
+
+## 一、当前背景
+
+原始网络首先经过：
+
+```text
+原始网络
+  ↓
+恒不激活 ReLU 剪枝
+  ↓
+恒激活 ReLU 重构
+  ↓
+得到规模更小但保持等价的神经网络
+```
+
+后续将这个网络称为：
+
+```text
+less_neuron_network
+```
+
+当前项目之后大致执行：
+
+```text
+less_neuron_network
+  ↓
+处理最后两个隐藏层
+  ↓
+classify_or_split_layer
+  ↓
+神经元被标记为 inc / dec
+  ↓
+混合单调性的神经元 split
+  ↓
+相同 label 的神经元进行 LP Merge
+  ↓
+Merge 到目标大小（当前通常为初始大小的 50%）
+  ↓
+CEGAR / PGD / refinement / formal verification
+```
+
+当前存在一个问题：
+
+某些隐藏层虽然最终未必需要进行大量 Merge，但提前进行了 inc/dec preprocessing 和 split。
+
+split 可能导致神经元数量增加，同时增加后续 CROWN、LP Merge、network reconstruction 和 refinement 的开销。
+
+因此希望把当前“一次性处理固定数量隐藏层”的策略修改为：
+
+# 渐进式、从输出端向输入端逐层扩展的 preprocessing + Merge 策略
+
+核心原则：
+
+> 只有真正准备执行 Merge 的隐藏层，才进行 inc/dec classification / split。
+
+未进入当前 Merge 范围的隐藏层不要提前进行等价性划分和 split。
+
+---
+
+# 二、新算法总体设计
+
+从：
+
+```text
+less_neuron_network
+```
+
+开始，在后续等价性预处理流程外增加一层“逐层扩展”的循环。
+
+假设网络共有 N 个隐藏层。
+
+处理顺序必须是：
+
+```text
+最后隐藏层
+↓
+倒数第二隐藏层
+↓
+倒数第三隐藏层
+↓
+...
+```
+
+每一轮只新增一个“当前探索层”。
+
+已经在前一轮证明可以安全执行到目标 Merge 比例的层，在下一轮可以直接重现对应 Merge 过程，而不需要每两次 Merge 再执行 random test。
+
+---
+
+# 三、第 1 轮
+
+第 1 轮必须从干净的：
+
+```text
+less_neuron_network
+```
+
+开始。
+
+只对：
+
+```text
+最后一个隐藏层
+```
+
+进行 inc/dec preprocessing。
+
+具体流程：
+
+```text
+less_neuron_network
+        ↓
+只对最后隐藏层执行 classify_or_split_layer
+        ↓
+单一方向神经元：
+    只标记 inc 或 dec
+
+混合方向神经元：
+    split 成 inc + dec
+        ↓
+仅允许相同 inc/dec label 的 neuron pair Merge
+```
+
+然后开始 LP Merge。
+
+目标大小仍然暂时保持现有逻辑：
+
+```text
+target_size = ceil(0.5 * reference_size)
+```
+
+但是不要连续 Merge 到 50%。
+
+改为：
+
+```text
+Merge 2 次
+↓
+执行一次 random property test
+↓
+判断当前 Merge 后网络是否已经存在 property violation
+```
+
+如果 random test 发现 violation：
+
+```text
+立即停止该层继续 Merge
+```
+
+不要为了达到 50% 而继续执行剩余 Merge。
+
+然后：
+
+```text
+保留当前 Merge 状态
+↓
+结束渐进式 preprocessing
+↓
+进入现有的后续 CEGAR / PGD / refinement / verification 流程
+```
+
+注意：
+
+这里 random test 不再只是日志。
+
+它必须真正作为：
+
+```text
+early stop condition
+```
+
+控制 Merge 是否继续。
+
+---
+
+如果：
+
+```text
+每两次 Merge → random test
+```
+
+始终没有发现 violation，并且最终成功将最后隐藏层 Merge 到目标 50%，则认为：
+
+```text
+最后隐藏层已经完成本轮探索
+```
+
+记录：
+
+```text
+该层可以 Merge 到 50%
+```
+
+然后进入第 2 轮。
+
+---
+
+# 四、第 2 轮
+
+第 2 轮必须重新从：
+
+```text
+less_neuron_network
+```
+
+开始构建本轮网络。
+
+不要直接在第 1 轮已经 Merge 完成的 state 上继续向前处理。
+
+这是非常重要的要求。
+
+第 2 轮需要处理：
+
+```text
+最后两个隐藏层
+```
+
+顺序仍然必须从后往前：
+
+```text
+最后隐藏层
+↓
+倒数第二隐藏层
+```
+
+首先重新执行必要的 inc/dec preprocessing。
+
+因为倒数第二隐藏层的 inc/dec 判断依赖最后隐藏层已经确定的 inc/dec labels，所以不要破坏当前从后往前传播单调性标签的逻辑。
+
+第 1 轮已经确认：
+
+```text
+最后隐藏层可以 Merge 到 50%
+```
+
+因此第 2 轮中：
+
+```text
+最后隐藏层：
+    可以直接执行对应 Merge
+    直到达到 50%
+    中间不需要每两次 Merge 做 random test
+```
+
+然后开始处理：
+
+```text
+倒数第二隐藏层
+```
+
+这是本轮新的“探索层”。
+
+执行：
+
+```text
+倒数第二隐藏层
+↓
+classify_or_split_layer
+↓
+LP Merge × 2
+↓
+random test
+↓
+如果没有 violation → 继续
+↓
+LP Merge × 2
+↓
+random test
+...
+```
+
+如果中途发现 violation：
+
+```text
+立即停止倒数第二隐藏层继续 Merge
+↓
+不再尝试更前面的隐藏层
+↓
+进入现有 refinement / verification 流程
+```
+
+如果倒数第二隐藏层也成功 Merge 到 50%，并始终没有 random violation：
+
+```text
+记录最后两个隐藏层均可 Merge 到 50%
+↓
+进入第 3 轮
+```
+
+---
+
+# 五、第 3 轮以及后续轮次
+
+按照完全相同的模式继续。
+
+例如第 3 轮：
+
+```text
+重新从 less_neuron_network 开始
+
+最后隐藏层
+    → 已确认
+    → 直接 Merge 到 50%
+
+倒数第二隐藏层
+    → 已确认
+    → 直接 Merge 到 50%
+
+倒数第三隐藏层
+    → 当前探索层
+    → 每完成 2 次 Merge 做一次 random test
+```
+
+如果倒数第三隐藏层：
+
+```text
+中途出现 random violation
+```
+
+则：
+
+```text
+停止继续 Merge
+↓
+停止向更前面的隐藏层扩展
+↓
+进入 refinement / verification
+```
+
+如果：
+
+```text
+倒数第三隐藏层成功 Merge 到 50%
+且始终没有 violation
+```
+
+则：
+
+```text
+进入第 4 轮
+```
+
+以此类推，直到：
+
+1. 某个新探索层在 Merge 过程中出现 random violation；
+
+或者：
+
+2. 所有允许处理的隐藏层都已经探索完毕。
+
+---
+
+# 六、算法可以抽象为
+
+```text
+less_neuron_network
+        ↓
+Round 1
+探索最后 1 层
+        ↓ success
+Round 2
+重建 less_neuron_network
+已确认层直接 Merge
+探索倒数第 2 层
+        ↓ success
+Round 3
+重建 less_neuron_network
+已确认层直接 Merge
+探索倒数第 3 层
+        ↓ success
+...
+```
+
+每轮只有一个：
+
+```text
+exploration layer
+```
+
+对于：
+
+```text
+confirmed layers
+```
+
+直接按照已经确认的 Merge 目标重现 Merge。
+
+对于：
+
+```text
+exploration layer
+```
+
+执行：
+
+```text
+每 2 次 Merge
+↓
+random test
+```
+
+---
+
+# 七、最重要的设计原则
+
+必须保证：
+
+```text
+没有准备进行 Merge 的隐藏层
+↓
+不要执行 classify_or_split_layer
+↓
+不要提前 split 神经元
+```
+
+即：
+
+```text
+只有真正进入本轮 Merge 范围的隐藏层
+才进行 inc/dec preprocessing
+```
+
+这是本次修改最核心的目标。
+
+不要在每一轮开始时对所有隐藏层统一执行 inc/dec preprocessing。
+
+---
+
+# 八、关于 inc/dec preprocessing
+
+请保留当前算法的单调性语义。
+
+即：
+
+对于某个隐藏层神经元：
+
+### 只有 increasing influence
+
+```text
+直接标记 inc
+```
+
+不要 split。
+
+### 只有 decreasing influence
+
+```text
+直接标记 dec
+```
+
+不要 split。
+
+### 同时存在 increasing 和 decreasing influence
+
+才：
+
+```text
+split 成 inc neuron + dec neuron
+```
+
+并保持当前 outgoing edge 拆分语义。
+
+同时继续保证：
+
+```text
+只有相同 inc/dec label 的神经元
+才允许进入 Merge pair
+```
+
+不要改变这一 soundness 相关约束。
+
+---
+
+# 九、关于 random test
+
+当前项目中 random test 很多时候只是记录：
+
+```text
+random_violation_ignored_until_target
+```
+
+新的实现中不要再忽略探索层中途出现的 random violation。
+
+对于当前 exploration layer：
+
+```text
+每成功完成 2 次 Merge
+```
+
+执行一次已有的：
+
+```text
+_random_property_violation_test(...)
+```
+
+如果：
+
+```text
+has_violation == True
+```
+
+必须立刻：
+
+```text
+停止当前 exploration layer 的后续 Merge
+```
+
+并结束外层逐层扩展。
+
+然后使用当前状态进入：
+
+```text
+PGD
+CEGAR
+refinement
+formal verification
+```
+
+不要因为 random test 本身不是正式证明工具而错误地把该样本直接标记为 UNSAFE。
+
+random test 在这里的作用仅仅是：
+
+```text
+停止进一步 abstraction / Merge
+```
+
+而不是直接决定最终 verification_result。
+
+最终安全性结论仍然必须由原来的 CEGAR / counterexample validation / formal verification 流程决定。
+
+---
+
+# 十、处理奇数次 Merge 的情况
+
+如果当前探索层距离 target_size 剩余的 Merge 次数不是 2 的整数倍，例如最后只剩：
+
+```text
+1 次 Merge
+```
+
+则应该：
+
+```text
+完成最后 1 次 Merge
+↓
+立即执行一次 random test
+```
+
+也就是说：
+
+random test 的条件应当是：
+
+```text
+每完成 2 次 Merge
+
+或者
+
+已经达到当前层 target_size
+```
+
+二者满足任一条件就测试。
+
+避免最后一次 Merge 后没有检查。
+
+---
+
+# 十一、每一轮必须基于干净的 less_neuron_network
+
+请特别注意 state 污染问题。
+
+每一轮：
+
+```text
+Round k
+```
+
+都应该从恒不激活剪枝 + 恒激活重构之后获得的：
+
+```text
+less_neuron_network
+```
+
+对应的基准 state 创建独立副本。
+
+不能简单地：
+
+```text
+Round 1 state
+↓
+继续修改
+↓
+Round 2
+```
+
+否则前一轮的：
+
+```text
+split
+merge
+mapping
+ids
+labels
+merge_log_stack
+refinement_log
+```
+
+可能污染下一轮。
+
+因此请设计可靠的：
+
+```text
+baseline_state
+↓ deepcopy / clone
+round_state
+```
+
+机制。
+
+要求：
+
+```text
+less_neuron_network / baseline_state
+```
+
+本身始终保持不变。
+
+---
+
+# 十二、已经确认层如何重放 Merge
+
+对于前面轮次已经成功 Merge 到 50% 的层：
+
+下一轮中仍然需要从 baseline state 重新构建，因此需要重新完成其必要的：
+
+```text
+classify_or_split
++
+Merge
+```
+
+但是：
+
+不需要：
+
+```text
+每 2 次 Merge → random test
+```
+
+这些层属于：
+
+```text
+confirmed layer
+```
+
+应该直接 Merge 到 target_size。
+
+注意：
+
+不要简单保存上一轮 Merge 后的网络然后与新的 baseline 混合。
+
+优先保证 state、labels、mapping、merge_log 一致。
+
+---
+
+# 十三、停止条件
+
+外层逐层循环存在以下停止条件。
+
+### 条件 1：探索层出现 random violation
+
+```text
+stop progressive preprocessing
+↓
+使用当前 round_state
+↓
+进入原来的 CEGAR 后续流程
+```
+
+### 条件 2：探索层已经 Merge 到 target_size
+
+```text
+本层标记为 confirmed
+↓
+开始下一轮
+```
+
+### 条件 3：所有目标隐藏层均已经处理
+
+```text
+停止 progressive preprocessing
+↓
+使用最后一轮 state
+↓
+进入后续 verification
+```
+
+### 条件 4：当前层没有合法的 same-label merge pair
+
+保留当前已有语义，不强制 Merge。
+
+记录停止原因，并合理结束当前层探索。
+
+---
+
+# 十四、不要破坏已有功能
+
+必须保留：
+
+```text
+dead ReLU pruning
+stable active ReLU reconstruction
+CROWN bounds
+inc/dec semantics
+LP Merge
+PGD
+CEGAR
+counterexample validation
+refinement
+Marabou verification
+最终结果语义
+```
+
+不要为了本次优化删除正式验证阶段。
+
+不要改变：
+
+```text
+VERIFIED
+UNSAFE
+TIMEOUT
+ERROR
+```
+
+的原有语义。
+
+不要让 random testing 替代 formal verification。
+
+---
+
+# 十五、增加必要的日志和统计信息
+
+为了后续评估该优化是否有效，请新增清晰的统计字段。
+
+至少记录：
+
+```text
+progressive_rounds
+```
+
+实际执行了多少轮。
+
+```text
+progressive_confirmed_layers
+```
+
+已经确认可以达到目标 Merge 比例的隐藏层数量。
+
+```text
+progressive_stop_layer
+```
+
+在哪一个隐藏层停止扩展。
+
+```text
+progressive_stop_reason
+```
+
+例如：
+
+```text
+random_violation
+target_reached
+no_merge_pair
+all_layers_processed
+```
+
+每一层额外记录：
+
+```text
+layer_index
+
+size_before_preprocessing
+
+size_after_inc_dec_split
+
+target_size
+
+merge_count
+
+random_test_count
+
+random_violation_found
+
+final_layer_size
+```
+
+最好增加：
+
+```text
+round_index
+exploration_layer
+confirmed_layer_count
+```
+
+---
+
+# 十六、增加性能计时
+
+本次修改也用于降低：
+
+```text
+cegar_time_seconds
+```
+
+因此请同时增加 profiling。
+
+至少统计：
+
+```text
+progressive_preprocessing_time_seconds
+
+inc_dec_preprocessing_time_seconds
+
+merge_total_time_seconds
+
+merge_crown_time_seconds
+
+merge_pair_selection_time_seconds
+
+merge_lp_time_seconds
+
+merge_random_test_time_seconds
+
+progressive_round_rebuild_time_seconds
+```
+
+如果方便，也增加：
+
+```text
+network_build_time_seconds
+```
+
+不要改变已有：
+
+```text
+cegar_time_seconds
+crown_time_seconds
+cegar_crown_time_seconds
+pgd_time_seconds
+```
+
+的原有统计含义。
+
+新增字段应该是已有总时间字段的子统计，而不是改变总时间定义。
+
+---
+
+# 十七、注意性能
+
+虽然新策略引入多轮：
+
+```text
+Round 1
+Round 2
+Round 3
+...
+```
+
+但不要做明显不必要的重复工作。
+
+在保证正确性的前提下：
+
+1. baseline state 只构造一次；
+2. 每轮 clone baseline；
+3. confirmed layers 可以快速重放；
+4. 不要对尚未进入处理范围的层做 preprocessing；
+5. 不要做无意义的 random test；
+6. 不要改变当前 LP soundness。
+
+但第一目标仍然是：
+
+```text
+算法正确
++
+控制流程符合上述设计
+```
+
+暂时不要为了极端性能优化而引入难以验证的复杂缓存。
+
+---
+
+# 十八、代码结构要求
+
+不要把所有逻辑都堆进：
+
+```text
+cegar_verify_with_marabou()
+```
+
+建议拆分成职责明确的小函数，例如可以设计成：
+
+```python
+clone_baseline_state(...)
+
+prepare_layer_for_merge(...)
+
+merge_confirmed_layer(...)
+
+explore_layer_with_random_tests(...)
+
+run_progressive_equivalence_preprocessing(...)
+```
+
+函数名不要求完全一致，但结构必须清晰。
+
+核心主流程最好能够读成：
+
+```python
+baseline_state = ...
+
+progressive_result = run_progressive_equivalence_preprocessing(
+    baseline_state=baseline_state,
+    ...
+)
+
+state = progressive_result.state
+
+# existing CEGAR / PGD / refinement / verification
+...
+```
+
+---
+
+# 十九、测试要求
+
+修改完成后，请增加或更新测试，至少验证以下场景。
+
+### Test 1
+
+网络只有一个隐藏层。
+
+应该：
+
+```text
+只执行 Round 1
+```
+
+能够正常 Merge 和验证。
+
+### Test 2
+
+最后隐藏层 Merge 两次之后 random test 出现 violation。
+
+应该：
+
+```text
+立即停止 Merge
+```
+
+不能继续 Merge 到 50%。
+
+### Test 3
+
+最后隐藏层成功 Merge 到 50%。
+
+应该：
+
+```text
+进入 Round 2
+```
+
+### Test 4
+
+Round 2 中：
+
+```text
+最后隐藏层直接 Merge 到 50%
+```
+
+并且不执行周期性 random test。
+
+只有：
+
+```text
+倒数第二隐藏层
+```
+
+每两次 Merge 做 random test。
+
+### Test 5
+
+倒数第二隐藏层中途出现 violation。
+
+应该：
+
+```text
+停止 progressive preprocessing
+```
+
+不能继续进入倒数第三层。
+
+### Test 6
+
+没有参与 Merge 的隐藏层。
+
+确认：
+
+```text
+没有执行 classify_or_split_layer
+没有发生 inc/dec split
+```
+
+### Test 7
+
+如果剩余只有一次 Merge 才到 target_size。
+
+完成该 Merge 后必须执行一次 random test。
+
+### Test 8
+
+确认 baseline state 没有被任何 round 修改。
+
+### Test 9
+
+确认 random violation：
+
+```text
+只停止 abstraction
+```
+
+不能直接把最终验证结果设置为 UNSAFE。
+
+### Test 10
+
+现有 CEGAR / refinement / Marabou 测试必须继续通过。
+
+---
+
+# 二十、修改完成后请输出总结
+
+完成代码修改后，请明确告诉我：
+
+1. 修改了哪些文件；
+2. 新增了哪些函数；
+3. 原来的 Merge 控制流程是什么；
+4. 修改后的 progressive Merge 控制流程是什么；
+5. random test 现在在什么条件下触发；
+6. random violation 如何影响控制流；
+7. 如何保证没有 Merge 的层不会提前 split；
+8. 如何保证每轮从干净的 less_neuron_network 开始；
+9. 新增了哪些日志字段和时间统计字段；
+10. 运行了哪些测试，测试结果如何；
+11. 是否发现任何可能影响 soundness 的地方。
+
+最后请用简洁伪代码展示最终实现，例如：
+
+```text
+baseline = less_neuron_network
+
+for depth = 1 ... number_of_hidden_layers:
+
+    state = clone(baseline)
+
+    preprocess + directly merge confirmed layers
+
+    exploration_layer = next layer toward input
+
+    preprocess exploration_layer only
+
+    while exploration_layer > target_size:
+
+        merge up to 2 neurons/pairs
+
+        random_test()
+
+        if violation:
+            stop progressive preprocessing
+            use current state
+            goto CEGAR
+
+    mark exploration_layer confirmed
+
+use final state
+goto CEGAR / PGD / refinement / formal verification
+```
+
+请优先保证：
+
+```text
+正确性
+→ soundness 不被破坏
+→ 控制流符合设计
+→ 再考虑代码优化
+```
+
+不要进行与本任务无关的大规模重构。

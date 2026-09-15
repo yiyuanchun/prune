@@ -24,10 +24,14 @@ import torch
 from batch_verify_mnist_cifar10_inputs import _classifies_sample_correctly
 from core.cegar import raw_cegar as cegar
 from core.cegar.pgd_search import add_search_arguments, search_options
+from core.cegar.progressive_merge import STAT_FIELDS as PROGRESSIVE_FIELDS
 from core.nnet.read_nnet import network_from_nnet_file, _load_onnx_dense_layers, read_nnet_parameters
 from core.pre_process import rednet_pipeline
 from core.pre_process.dead_relu_pruning import apply_input_bounds_from_property
 from core.utils import marabou_query_utils as queries
+from core.utils.experiment_output import (
+    artifacts_enabled, diagnostic_artifacts, sample_workspace, solver_console,
+)
 from core.utils.mnist_property_utils import (
     load_mnist_sample, build_mnist_adversarial_property, build_mnist_property_id,
     _resolve_idx_path,
@@ -59,6 +63,8 @@ BASELINE = ['crown_stable_inactive_relu_count', 'crown_removed_relu_count', 'rel
 
 
 def dump(path, value):
+    if not artifacts_enabled():
+        return
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(value, indent=2, allow_nan=False), encoding='utf-8')
 
@@ -214,6 +220,11 @@ def observe(metrics, concrete_network=None):
 
 
 def run(args):
+    with diagnostic_artifacts(getattr(args, 'save_artifacts', False)):
+        return _run(args)
+
+
+def _run(args):
     manifest = json.loads(args.samples.read_text())
     for key in ['model', 'nnet']:
         if digest(manifest[key]) != manifest[key + '_sha256']:
@@ -234,11 +245,12 @@ def run(args):
     epsilon_tag = format(epsilon, 'g').replace('.', '')
     csv_path = output / ('b3_{}_eps{}.csv'.format('rednet_narv' if enabled else 'baseline_par', epsilon_tag))
     concrete = network_from_nnet_file(manifest['nnet'])
-    fields = COMMON + (REDNET if enabled else BASELINE)
+    fields = COMMON + list(PROGRESSIVE_FIELDS) + (REDNET if enabled else BASELINE)
     dump(output / 'run_config.json', {**manifest, 'route': args.route, 'pid': os.getpid(),
-         'cpu_affinity': sorted(os.sched_getaffinity(0)), 'sample_manifest_sha256': digest(args.samples),
+         'cpu_affinity': sorted(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else None,
+         'sample_manifest_sha256': digest(args.samples),
          'selected_indices': selected, 'smoke_direct_solver': args.smoke_direct_solver,
-         'cegar_policy': 'initial-pgd-batch-refinement-v2',
+         'cegar_policy': 'progressive-merge-initial-pgd-v3',
          'extra_refinement_merges': args.extra_refinement_merges,
          'pgd': search_options(args)['pgd_config'].to_dict(),
          'cegar_source_sha256': digest(Path(cegar.__file__)),
@@ -252,108 +264,109 @@ def run(args):
             sample, label, prop, pid = property_for(manifest, index)
             if not _classifies_sample_correctly(concrete, {'sample': sample.tolist(), 'label': label}):
                 raise ValueError('Frozen valid sample no longer classifies correctly')
-            run_dir = output / pid
-            run_dir.mkdir()
-            dump(output / 'progress.json', {'sample_index': index, 'property_id': pid, 'stage': 'started', 'pid': os.getpid()})
-            print(f'B3 SAMPLE START index={index} property={pid}', flush=True)
-            row = dict.fromkeys(fields, '')
-            row.update(sample_index=index, property_id=pid, epsilon=epsilon, original_relu_count=192)
-            metrics = dict(all_hidden_crown_seconds=0., crown_initial_time_seconds=0.,
-                           crown_removed_relu_count=0, marabou_calls=0, original_concrete_checks=0)
-            start = time.perf_counter()
-            cegar_start = None
-            red = None
-            failure = None
-            try:
-                working_file = manifest['nnet']
+            with sample_workspace(output / pid) as run_dir:
+                dump(output / 'progress.json', {'sample_index': index, 'property_id': pid, 'stage': 'started', 'pid': os.getpid()})
+                print(f'B3 SAMPLE START index={index} property={pid}', flush=True)
+                row = dict.fromkeys(fields, '')
+                row.update(sample_index=index, property_id=pid, epsilon=epsilon, original_relu_count=192)
+                metrics = dict(all_hidden_crown_seconds=0., crown_initial_time_seconds=0.,
+                               crown_removed_relu_count=0, marabou_calls=0, original_concrete_checks=0)
+                start = time.perf_counter()
+                cegar_start = None
+                red = None
+                failure = None
+                try:
+                    with solver_console():
+                        working_file = manifest['nnet']
+                        if enabled:
+                            red = rednet_pipeline.prepare_rednet_nnet(
+                                working_file, prop, run_dir / 'rednet.nnet',
+                                equivalence_samples=manifest['equivalence_samples'],
+                                equivalence_tolerance=manifest['equivalence_tolerance'],
+                                seed=manifest['seed'] + index,
+                            )
+                            dump(run_dir / 'rednet_report.json', red)
+                            working_file = red['output_nnet_file']
+                            rr, eq = red['reduction'], red['equivalence']
+                            row.update(rednet_reduction_time_seconds=red['reduction_time_seconds'],
+                                rednet_preprocessing_time_seconds=red['preprocessing_time_seconds'],
+                                rednet_crown_time_seconds=red['crown_time_seconds'],
+                                stable_inactive_relu_count=sum(p['stable_inactive'] for p in rr['per_layer']),
+                                stable_inactive_removed_count=rr['total_inactive_removed'],
+                                stable_active_relu_count=sum(p['stable_active'] for p in rr['per_layer']),
+                                stable_active_eliminated_count=rr['total_active_eliminated'],
+                                reconstructed_stable_relu_count=rr['total_reconstructed_units'],
+                                stable_active_net_reduction_count=rr['total_active_eliminated']-rr['total_reconstructed_units'],
+                                relu_count_after_rednet=rr['reduced_relu_count'], total_relu_reduction_count=rr['relu_removed'],
+                                relu_reduction_ratio=rr['relu_removed']/rr['original_relu_count'],
+                                equivalence_sample_count=eq['samples'], equivalence_output_abs_error_mean=eq['mean_abs_error'],
+                                equivalence_output_abs_error_variance=eq['variance_abs_error'],
+                                equivalence_output_abs_error_max=eq['max_abs_error'], equivalence_passed=eq['passed'])
+                            print(f"REDNET index={index} relus=192->{rr['reduced_relu_count']} inactive={rr['total_inactive_removed']} active={rr['total_active_eliminated']} reconstructed={rr['total_reconstructed_units']} max_error={eq['max_abs_error']:.3g}", flush=True)
+                        cegar_start = time.perf_counter()
+                        with observe(metrics, concrete if enabled else None):
+                            result = cegar.cegar_verify_with_marabou(
+                                working_file, prop, run_dir / 'cegar',
+                                max_refinement_steps=manifest['max_refinement_steps'],
+                                marabou_timeout=manifest['marabou_timeout_seconds'], tolerance=manifest['tolerance'], property_id=pid,
+                                **search_options(args))
+                        if result['cegar_iterations'] != metrics['marabou_calls']:
+                            raise AssertionError('CEGAR iteration count differs from actual Marabou calls')
+                        for name in ['pgd_calls', 'pgd_time_seconds', 'pgd_candidates_found',
+                                     'pgd_genuine_counterexamples', 'pgd_spurious_counterexamples',
+                                     'batch_refinement_rounds', 'extra_refinement_steps', 'formal_verifier_calls']:
+                            row[name] = result[name]
+                        row.update({name: result[name] for name in PROGRESSIVE_FIELDS})
+                        row['cegar_time_seconds'] = time.perf_counter() - cegar_start
+                        query_result = str(result.get('query_result', 'UNKNOWN')).upper()
+                        row.update(verification_result={'SAT':'UNSAFE', 'UNSAT':'VERIFIED', 'TIMEOUT':'TIMEOUT', 'ERROR':'ERROR'}.get(query_result, 'UNKNOWN'),
+                                   query_result=query_result, cegar_iterations=result.get('iterations', 0),
+                                   refinement_steps=result.get('total_refinement_steps', 0), crown_precheck_status=result.get('crown_precheck_status', ''))
+                        if query_result == 'ERROR':
+                            raise RuntimeError('Marabou returned ERROR; see stderr traceback (use --save-artifacts for diagnostics)')
+                except Exception as exc:
+                    failure = exc
+                    traceback.print_exc()
+                    row.update(verification_result='ERROR', query_result='ERROR', error_type=type(exc).__name__, error_message=str(exc))
+                    if cegar_start is not None:
+                        row['cegar_time_seconds'] = time.perf_counter() - cegar_start
+                row['total_verification_time_seconds'] = time.perf_counter() - start
+                # initial_crown calls the wrapped hidden routine: subtract that nested
+                # time once; output-bound time belongs to the initial stage as well.
+                initial_time = metrics['crown_initial_time_seconds']
+                # measured separately below by observe's first hidden call
+                all_crown = metrics['all_hidden_crown_seconds'] + initial_time - metrics.get('initial_hidden_seconds', 0.)
+                row.update(crown_initial_time_seconds=initial_time, cegar_crown_time_seconds=all_crown,
+                           crown_time_seconds=all_crown + (red['crown_time_seconds'] if red else 0.),
+                           marabou_calls=metrics['marabou_calls'])
                 if enabled:
-                    red = rednet_pipeline.prepare_rednet_nnet(
-                        working_file, prop, run_dir / 'rednet.nnet',
-                        equivalence_samples=manifest['equivalence_samples'],
-                        equivalence_tolerance=manifest['equivalence_tolerance'],
-                        seed=manifest['seed'] + index,
-                    )
-                    dump(run_dir / 'rednet_report.json', red)
-                    working_file = red['output_nnet_file']
-                    rr, eq = red['reduction'], red['equivalence']
-                    row.update(rednet_reduction_time_seconds=red['reduction_time_seconds'],
-                        rednet_preprocessing_time_seconds=red['preprocessing_time_seconds'],
-                        rednet_crown_time_seconds=red['crown_time_seconds'],
-                        stable_inactive_relu_count=sum(p['stable_inactive'] for p in rr['per_layer']),
-                        stable_inactive_removed_count=rr['total_inactive_removed'],
-                        stable_active_relu_count=sum(p['stable_active'] for p in rr['per_layer']),
-                        stable_active_eliminated_count=rr['total_active_eliminated'],
-                        reconstructed_stable_relu_count=rr['total_reconstructed_units'],
-                        stable_active_net_reduction_count=rr['total_active_eliminated']-rr['total_reconstructed_units'],
-                        relu_count_after_rednet=rr['reduced_relu_count'], total_relu_reduction_count=rr['relu_removed'],
-                        relu_reduction_ratio=rr['relu_removed']/rr['original_relu_count'],
-                        equivalence_sample_count=eq['samples'], equivalence_output_abs_error_mean=eq['mean_abs_error'],
-                        equivalence_output_abs_error_variance=eq['variance_abs_error'],
-                        equivalence_output_abs_error_max=eq['max_abs_error'], equivalence_passed=eq['passed'])
-                    print(f"REDNET index={index} relus=192->{rr['reduced_relu_count']} inactive={rr['total_inactive_removed']} active={rr['total_active_eliminated']} reconstructed={rr['total_reconstructed_units']} max_error={eq['max_abs_error']:.3g}", flush=True)
-                cegar_start = time.perf_counter()
-                with observe(metrics, concrete if enabled else None):
-                    result = cegar.cegar_verify_with_marabou(
-                        working_file, prop, run_dir / 'cegar',
-                        max_refinement_steps=manifest['max_refinement_steps'],
-                        marabou_timeout=manifest['marabou_timeout_seconds'], tolerance=manifest['tolerance'], property_id=pid,
-                        **search_options(args))
-                if result['cegar_iterations'] != metrics['marabou_calls']:
-                    raise AssertionError('CEGAR iteration count differs from actual Marabou calls')
-                for name in ['pgd_calls', 'pgd_time_seconds', 'pgd_candidates_found',
-                             'pgd_genuine_counterexamples', 'pgd_spurious_counterexamples',
-                             'batch_refinement_rounds', 'extra_refinement_steps', 'formal_verifier_calls']:
-                    row[name] = result[name]
-                row['cegar_time_seconds'] = time.perf_counter() - cegar_start
-                query_result = str(result.get('query_result', 'UNKNOWN')).upper()
-                row.update(verification_result={'SAT':'UNSAFE', 'UNSAT':'VERIFIED', 'TIMEOUT':'TIMEOUT', 'ERROR':'ERROR'}.get(query_result, 'UNKNOWN'),
-                           query_result=query_result, cegar_iterations=result.get('iterations', 0),
-                           refinement_steps=result.get('total_refinement_steps', 0), crown_precheck_status=result.get('crown_precheck_status', ''))
-                if query_result == 'ERROR':
-                    raise RuntimeError('Marabou returned ERROR; see full traceback and cegar_log.json')
-            except Exception as exc:
-                failure = exc
-                traceback.print_exc()
-                row.update(verification_result='ERROR', query_result='ERROR', error_type=type(exc).__name__, error_message=str(exc))
-                if cegar_start is not None:
-                    row['cegar_time_seconds'] = time.perf_counter() - cegar_start
-            row['total_verification_time_seconds'] = time.perf_counter() - start
-            # initial_crown calls the wrapped hidden routine: subtract that nested
-            # time once; output-bound time belongs to the initial stage as well.
-            initial_time = metrics['crown_initial_time_seconds']
-            # measured separately below by observe's first hidden call
-            all_crown = metrics['all_hidden_crown_seconds'] + initial_time - metrics.get('initial_hidden_seconds', 0.)
-            row.update(crown_initial_time_seconds=initial_time, cegar_crown_time_seconds=all_crown,
-                       crown_time_seconds=all_crown + (red['crown_time_seconds'] if red else 0.),
-                       marabou_calls=metrics['marabou_calls'])
-            if enabled:
-                row['cegar_additional_dead_relu_removed_count'] = metrics['crown_removed_relu_count']
-            else:
-                row.update(crown_stable_inactive_relu_count=metrics.get('crown_stable_inactive_relu_count', ''),
-                           crown_removed_relu_count=metrics['crown_removed_relu_count'],
-                           relu_count_after_crown_pruning=192-metrics['crown_removed_relu_count'])
-            dump(run_dir / 'observations.json', metrics)
-            dump(run_dir / 'row.json', row)
-            writer.writerow(row)
-            stream.flush()
-            os.fsync(stream.fileno())
-            print(f"B3 SAMPLE END index={index} result={row['verification_result']} total={row['total_verification_time_seconds']:.3f}s", flush=True)
-            if failure:
-                raise RuntimeError(f'B3 stopped after ERROR on sample {index}') from failure
-            if args.smoke_direct_solver:
-                # A sound CROWN precheck may finish the production chain early.
-                # Exercise actual Marabou separately without changing that chain.
-                net = network_from_nnet_file(working_file)
-                net, transformed = queries.reduce_property_to_basic_form(net, copy.deepcopy(prop))
-                direct = cegar.verify_network_with_marabou(net, transformed,
-                    timeout=manifest['marabou_timeout_seconds'], save_query_path=run_dir/'smoke_direct.query')
-                dump(run_dir/'smoke_direct_result.json', direct)
-                if direct['status'] not in ['sat', 'unsat']:
-                    raise RuntimeError('Supplementary smoke Marabou did not solve: '+str(direct))
-                if row['query_result'] in ['SAT','UNSAT'] and direct['status'].upper()!=row['query_result']:
-                    raise AssertionError('Smoke CEGAR/direct solver result disagreement')
-                print(f"SMOKE MARABOU index={index} status={direct['status']}", flush=True)
-            dump(output / 'progress.json', {'sample_index': index, 'property_id': pid, 'stage': 'completed', 'pid': os.getpid()})
+                    row['cegar_additional_dead_relu_removed_count'] = metrics['crown_removed_relu_count']
+                else:
+                    row.update(crown_stable_inactive_relu_count=metrics.get('crown_stable_inactive_relu_count', ''),
+                               crown_removed_relu_count=metrics['crown_removed_relu_count'],
+                               relu_count_after_crown_pruning=192-metrics['crown_removed_relu_count'])
+                dump(run_dir / 'observations.json', metrics)
+                dump(run_dir / 'row.json', row)
+                writer.writerow(row)
+                stream.flush()
+                os.fsync(stream.fileno())
+                print(f"B3 SAMPLE END index={index} result={row['verification_result']} total={row['total_verification_time_seconds']:.3f}s", flush=True)
+                if failure:
+                    raise RuntimeError(f'B3 stopped after ERROR on sample {index}') from failure
+                if args.smoke_direct_solver:
+                    # A sound CROWN precheck may finish the production chain early.
+                    # Exercise actual Marabou separately without changing that chain.
+                    net = network_from_nnet_file(working_file)
+                    net, transformed = queries.reduce_property_to_basic_form(net, copy.deepcopy(prop))
+                    direct = cegar.verify_network_with_marabou(net, transformed,
+                        timeout=manifest['marabou_timeout_seconds'], save_query_path=run_dir/'smoke_direct.query')
+                    dump(run_dir/'smoke_direct_result.json', direct)
+                    if direct['status'] not in ['sat', 'unsat']:
+                        raise RuntimeError('Supplementary smoke Marabou did not solve: '+str(direct))
+                    if row['query_result'] in ['SAT','UNSAT'] and direct['status'].upper()!=row['query_result']:
+                        raise AssertionError('Smoke CEGAR/direct solver result disagreement')
+                    print(f"SMOKE MARABOU index={index} status={direct['status']}", flush=True)
+                dump(output / 'progress.json', {'sample_index': index, 'property_id': pid, 'stage': 'completed', 'pid': os.getpid()})
     print('B3 COMPLETE', flush=True)
 
 
@@ -367,6 +380,8 @@ def main():
     parser.add_argument('--output', type=Path)
     parser.add_argument('--limit', type=int)
     parser.add_argument('--smoke-direct-solver', action='store_true')
+    parser.add_argument('--save-artifacts', action='store_true',
+                        help='Keep detailed JSON, networks and queries; default: CSV results only')
     add_search_arguments(parser)
     args = parser.parse_args()
     torch.set_num_threads(1)

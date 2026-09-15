@@ -90,6 +90,10 @@ def test_controller(monkeypatch, tmp_path, crown, formal, pgd, count, budget, wa
     monkeypatch.setattr(c, '_state_from_network', lambda *a: state)
     monkeypatch.setattr(c, 'build_network_from_state', lambda *a: current)
     monkeypatch.setattr(c, 'merge_last_two_hidden_layers', lambda *a, **kw: [])
+    if Path(c.__file__).resolve().parents[2].name == 'parnv-MC':
+        from core.cegar import progressive_merge as progressive
+        monkeypatch.setattr(progressive, 'run_progressive_equivalence_preprocessing',
+                            lambda *a, **kw: progressive.ProgressiveResult(state, progressive.empty_statistics(), []))
     monkeypatch.setattr(c, 'write_nnet', lambda *a: None)
     monkeypatch.setattr(c, '_write_stage_logs', lambda *a, **kw: None)
     monkeypatch.setattr(c, '_network_structure_for_log', lambda *a: 'mock', raising=False)

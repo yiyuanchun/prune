@@ -18,6 +18,7 @@ from core.data_structures.ARNode import ARNode
 from core.data_structures.Layer import Layer
 from core.utils.verification_properties_utils import get_winner_and_runner_up
 from core.utils.activation_functions import identity
+from core.utils.experiment_output import artifacts_enabled
 
 DEFAULT_MARABOU_TIMEOUT_SECONDS = 1200
 QUERY_LOG_ENV_VAR = "NARV_SAVE_QUERY_PATH"
@@ -190,6 +191,8 @@ def _resolve_query_save_path(save_query_path: str | os.PathLike[str] | None) -> 
 
 
 def _try_save_query(input_query: Any, save_query_path: str | os.PathLike[str] | None, verbose: bool) -> None:
+    if not artifacts_enabled():
+        return
     resolved_path = _resolve_query_save_path(save_query_path)
     if resolved_path is None:
         return
@@ -755,7 +758,10 @@ def get_query(
                     # !!!!!!!!!!!!!
                     else:
                         src_variable = nodes2variables[in_edge.src + "_f"]
-                    dest_variable = nodes2variables[in_edge.dest + "_b"]
+                    # A shallow network's output can also fall in this branch;
+                    # output variables have no preactivation suffix.
+                    dest_name = in_edge.dest if layer.type_name == "output" else in_edge.dest + "_b"
+                    dest_variable = nodes2variables[dest_name]
                     key = (src_variable, dest_variable)
                     var_weight = edge2weight.get(key, 0.0)
                     new_weight = var_weight + in_edge.weight

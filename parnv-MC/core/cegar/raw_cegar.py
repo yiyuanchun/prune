@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import copy
 import json
-import math
 import os
 import sys
 import time
@@ -12,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from core.utils.experiment_output import artifacts_enabled
 
 from core.cegar.pgd_search import (
     PGDConfig, DEFAULT_EXTRA_REFINEMENT_MERGES, search_counterexample,
@@ -51,6 +52,7 @@ class RawCegarState:
     merge_log_stack: list[dict[str, Any]] = field(default_factory=list)
     merge_log: list[dict[str, Any]] = field(default_factory=list)
     refinement_log: list[dict[str, Any]] = field(default_factory=list)
+    preprocessing_undo_stack: list[dict[str, Any]] = field(default_factory=list)
     next_split_id: int = 0
     next_merge_id: int = 0
 
@@ -72,12 +74,16 @@ def _to_jsonable(value: Any) -> Any:
 
 
 def _write_json(path: Path, payload: Any) -> None:
+    if not artifacts_enabled():
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as json_file:
         json.dump(_to_jsonable(payload), json_file, indent=2, sort_keys=True)
 
 
 def _print_to_console(message: str) -> None:
+    if not artifacts_enabled():
+        return
     output_stream = sys.__stdout__ if getattr(sys, "__stdout__", None) is not None else sys.stdout
     print(message, file=output_stream, flush=True)
 
@@ -124,6 +130,8 @@ def build_network_from_state(state: RawCegarState):
 
 
 def write_nnet(network_or_state: Any, nnet_file: str | os.PathLike[str]) -> None:
+    if not artifacts_enabled():
+        return
     if isinstance(network_or_state, RawCegarState):
         weights = [weight.tolist() for weight in network_or_state.weights]
         biases = [bias.tolist() for bias in network_or_state.biases]
@@ -165,7 +173,7 @@ def _state_from_network(network, test_property: dict[str, Any]) -> RawCegarState
         [node.name for node in layer.nodes]
         for layer in network.layers
     ]
-    hidden_layer_indices = get_last_hidden_layer_indices_from_state(weights, count=2)
+    hidden_layer_indices = list(range(1, len(weights)))
     labels = {
         layer_index: ["unknown"] * len(ids_by_layer[layer_index])
         for layer_index in hidden_layer_indices
@@ -200,6 +208,8 @@ def _labels_for_json(labels: dict[int, list[str]]) -> dict[str, list[str]]:
 
 def _write_stage_logs(state: RawCegarState, output_dir: Path, cegar_log: dict[str, Any] | None = None) -> None:
     _sync_mapping_ids(state)
+    if not artifacts_enabled():
+        return
     _write_json(output_dir / "labels.json", _labels_for_json(state.labels))
     _write_json(output_dir / "mapping.json", state.mapping)
     _write_json(output_dir / "merge_log.json", state.merge_log)
@@ -676,6 +686,7 @@ def merge_two_neurons(
         state: RawCegarState,
         pair: dict[str, Any],
         crown_bounds: HiddenLayerCrownBounds,
+        profiling: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     layer_index = int(pair["layer"])
     j = int(pair["j"])
@@ -698,14 +709,23 @@ def merge_two_neurons(
         crown_bounds=crown_bounds,
         layer_index=layer_index,
     )
-    lp_result = solve_merged_incoming_weights_and_bias(
-        neuron_j={"weights": incoming_weights[j], "bias": incoming_biases[j]},
-        neuron_k={"weights": incoming_weights[k], "bias": incoming_biases[k]},
-        lower_bounds=predecessor_lower,
-        upper_bounds=predecessor_upper,
-        neuron_type=labels[j],
-        predecessor_is_input=predecessor_is_input,
-    )
+    lp_start = time.perf_counter()
+    try:
+        lp_result = solve_merged_incoming_weights_and_bias(
+            neuron_j={"weights": incoming_weights[j], "bias": incoming_biases[j]},
+            neuron_k={"weights": incoming_weights[k], "bias": incoming_biases[k]},
+            lower_bounds=predecessor_lower,
+            upper_bounds=predecessor_upper,
+            neuron_type=labels[j],
+            predecessor_is_input=predecessor_is_input,
+        )
+    finally:
+        if profiling is not None:
+            profiling["merge_lp_time_seconds"] += time.perf_counter() - lp_start
+    # Progressive exploration can reach the first hidden layer. The existing
+    # componentwise fallback requires nonnegative predecessors, unlike the LP.
+    if lp_result["used_fallback"] and predecessor_is_input and np.any(predecessor_lower < 0):
+        raise ValueError("LP fallback cannot certify Merge over signed inputs")
 
     merge_id = state.next_merge_id
     state.next_merge_id += 1
@@ -788,106 +808,13 @@ def merge_last_two_hidden_layers(
         tolerance: float = 1e-12,
         test_property: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    merge_reports = []
-    reference_sizes = {
-        int(layer_index): int(size)
-        for layer_index, size in state.mapping.get("merge_reference_hidden_sizes", {}).items()
-    }
-    for layer_index in get_last_hidden_layer_indices_from_state(state.weights, count=2):
-        initial_size = reference_sizes.get(layer_index, len(state.ids_by_layer[layer_index]))
-        target_size = max(int(math.ceil(0.5 * initial_size)), 1)
-        random_inputs = _random_inputs_from_state(state, samples=10, seed=layer_index)
-        if len(state.ids_by_layer[layer_index]) <= target_size:
-            merge_reports.append({
-                "layer": layer_index,
-                "reason": "target size already reached; inc/dec preprocessing skipped",
-                "initial_size_before_inc_dec": initial_size,
-                "current_size": len(state.ids_by_layer[layer_index]),
-                "target_size": target_size,
-            })
-            continue
-        if layer_index < len(state.weights) - 1:
-            next_labels = state.labels.get(layer_index + 1)
-            if not _has_inc_dec_labels(next_labels):
-                merge_reports.append({
-                    "layer": layer_index,
-                    "reason": "downstream hidden layer was not inc/dec preprocessed; merge skipped",
-                    "initial_size_before_inc_dec": initial_size,
-                    "current_size": len(state.ids_by_layer[layer_index]),
-                    "target_size": target_size,
-                })
-                continue
-        preprocess_report = classify_or_split_layer(state, layer_index, tolerance=tolerance)
-        merge_reports.append({
-            "layer": layer_index,
-            "reason": "inc/dec preprocessing before layer merge",
-            "initial_size_before_inc_dec": initial_size,
-            "target_size": target_size,
-            "inc_dec_preprocess": preprocess_report,
-        })
-        while True:
-            current_size = len(state.ids_by_layer[layer_index])
-            if current_size <= target_size:
-                if test_property is None:
-                    merge_reports.append({
-                        "layer": layer_index,
-                        "reason": "target size reached",
-                        "initial_size_before_inc_dec": initial_size,
-                        "current_size": current_size,
-                        "target_size": target_size,
-                    })
-                    break
-                current_network = build_network_from_state(state)
-                random_test = _random_property_violation_test(
-                    network=current_network,
-                    test_property=test_property,
-                    random_inputs=random_inputs,
-                )
-                merge_reports.append({
-                    "layer": layer_index,
-                    "reason": (
-                        "target size reached with random violation"
-                        if random_test["has_violation"]
-                        else "target size reached with safe random samples"
-                    ),
-                    "initial_size_before_inc_dec": initial_size,
-                    "current_size": current_size,
-                    "target_size": target_size,
-                    "random_property_test": random_test,
-                })
-                if random_test["has_violation"]:
-                    return merge_reports
-                break
-            current_network = build_network_from_state(state)
-            crown_hidden_bounds = compute_crown_hidden_layer_bounds(current_network)
-            pair = select_merge_pair_by_crown_score(
-                state=state,
-                layer_index=layer_index,
-                crown_bounds=crown_hidden_bounds,
-            )
-            if pair is None:
-                merge_reports.append({
-                    "layer": layer_index,
-                    "reason": "no same-type merge pair",
-                    "current_size": len(state.ids_by_layer[layer_index]),
-                    "target_size": target_size,
-                })
-                break
-            merge_record = merge_two_neurons(state, pair, crown_hidden_bounds)
-            if test_property is not None:
-                current_network = build_network_from_state(state)
-                random_test = _random_property_violation_test(
-                    network=current_network,
-                    test_property=test_property,
-                    random_inputs=random_inputs,
-                )
-                merge_record["random_property_test_after_merge"] = random_test
-                merge_record["random_violation_ignored_until_target"] = (
-                    len(state.ids_by_layer[layer_index]) > target_size
-                    and random_test["has_violation"]
-                )
-            merge_reports.append(merge_record)
-    return merge_reports
+    """Compatibility entry point restricted to the last two progressive layers."""
+    from core.cegar.progressive_merge import run_progressive_equivalence_preprocessing
+    result = run_progressive_equivalence_preprocessing(
+        state, test_property, tolerance=tolerance, max_hidden_layers=2,
+    )
+    state.__dict__.update(result.state.__dict__)
+    return result.layer_reports
 
 
 def verify_network_with_marabou(
@@ -1041,6 +968,25 @@ def undo_last_merge(
         raise ValueError("undo_last_merge requires the RawCegarState used by this flow")
     if not merge_log_stack:
         raise ValueError("No merge operation is available to undo")
+    undone_preprocessing = []
+    while (state.preprocessing_undo_stack
+           and state.preprocessing_undo_stack[-1]["merge_depth"] == len(merge_log_stack)):
+        checkpoint = state.preprocessing_undo_stack.pop()
+        split_layer = checkpoint["layer"]
+        state.weights[split_layer - 1] = checkpoint["incoming"].copy()
+        state.biases[split_layer - 1] = checkpoint["bias"].copy()
+        state.weights[split_layer] = checkpoint["outgoing"].copy()
+        state.ids_by_layer[split_layer] = list(checkpoint["ids"])
+        if checkpoint["labels"] is None:
+            state.labels.pop(split_layer, None)
+            labels.pop(split_layer, None)
+        else:
+            state.labels[split_layer] = list(checkpoint["labels"])
+            labels[split_layer] = state.labels[split_layer]
+        undone_preprocessing.append(split_layer)
+        mapping.setdefault("undone_inc_dec_preprocessing", []).append({
+            "layer": split_layer, "before_undo_merge_id": merge_log_stack[-1]["merge_id"],
+        })
     record = merge_log_stack.pop()
     layer_index = int(record["layer"])
     state.weights[layer_index - 1] = np.asarray(record["layer_weights_before"], dtype=float)
@@ -1055,6 +1001,7 @@ def undo_last_merge(
         "layer": layer_index,
         "restored_neurons": record["old_neurons"],
         "removed_merged_neuron": record["merged_neuron"],
+        "undone_inc_dec_layers": undone_preprocessing,
     }
     state.refinement_log.append(refinement_record)
     return refinement_record
@@ -1130,6 +1077,8 @@ def _finalize(
         final_network: Any,
         counterexample: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    from core.cegar.progressive_merge import empty_statistics
+    final_result.update(cegar_log.get("progressive_statistics", empty_statistics()))
     final_result.update(cegar_log.get("search_statistics", {
         "pgd_calls": 0, "pgd_time_seconds": 0.0, "pgd_candidates_found": 0,
         "pgd_genuine_counterexamples": 0, "pgd_spurious_counterexamples": 0,
@@ -1238,7 +1187,8 @@ def cegar_verify_with_marabou(
     if extra_refinement_merges < 0 or (max_refinement_steps is not None and max_refinement_steps < 0):
         raise ValueError("Refinement budgets must be non-negative")
     output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
+    if artifacts_enabled():
+        output_path.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
 
     if isinstance(property_file, dict):
@@ -1313,8 +1263,13 @@ def cegar_verify_with_marabou(
     )
     cegar_log["dead_relu_pruning_report"] = pruning_report
 
-    state = _state_from_network(working_network, test_property)
-    merge_report = merge_last_two_hidden_layers(state, test_property=test_property)
+    from core.cegar.progressive_merge import run_progressive_equivalence_preprocessing
+    baseline_state = _state_from_network(working_network, test_property)
+    progressive_result = run_progressive_equivalence_preprocessing(baseline_state, test_property)
+    state = progressive_result.state
+    merge_report = progressive_result.layer_reports
+    cegar_log["progressive_statistics"] = progressive_result.statistics
+    cegar_log["progressive_round_reports"] = progressive_result.rounds
     cegar_log["inc_dec_preprocess_report"] = [
         report["inc_dec_preprocess"]
         for report in merge_report
