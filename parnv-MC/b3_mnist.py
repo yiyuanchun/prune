@@ -35,7 +35,7 @@ from core.utils.mnist_property_utils import (
 
 ROOT = Path(__file__).resolve().parents[1]
 COMMON = [
-    'sample_index', 'property_id', 'verification_result', 'query_result',
+    'sample_index', 'property_id', 'epsilon', 'verification_result', 'query_result',
     'total_verification_time_seconds', 'crown_time_seconds', 'original_relu_count',
     'cegar_iterations', 'refinement_steps', 'cegar_time_seconds',
     'crown_initial_time_seconds', 'cegar_crown_time_seconds',
@@ -221,24 +221,29 @@ def run(args):
     for name, expected in manifest['dataset_sha256'].items():
         if digest(_resolve_idx_path(manifest['dataset_root'], name)) != expected:
             raise ValueError('Frozen dataset changed: ' + name)
-    if len(manifest['sample_indices']) != 30 or len(set(manifest['sample_indices'])) != 30:
-        raise ValueError('Manifest must contain exactly 30 distinct valid samples')
+    expected_count = int(manifest.get('sample_count', 30))
+    if expected_count <= 0 or len(manifest['sample_indices']) != expected_count or len(set(manifest['sample_indices'])) != expected_count:
+        raise ValueError(f'Manifest must contain exactly {expected_count} distinct valid samples')
+    epsilon = float(manifest['epsilon'])
+    if not np.isfinite(epsilon) or epsilon <= 0:
+        raise ValueError('Epsilon must be finite and positive')
     selected = manifest['sample_indices'][:args.limit] if args.limit else manifest['sample_indices']
     enabled = args.route == 'rednet'
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    csv_path = output / ('b3_rednet_narv_eps002.csv' if enabled else 'b3_baseline_par_eps002.csv')
+    epsilon_tag = format(epsilon, 'g').replace('.', '')
+    csv_path = output / ('b3_{}_eps{}.csv'.format('rednet_narv' if enabled else 'baseline_par', epsilon_tag))
     concrete = network_from_nnet_file(manifest['nnet'])
     fields = COMMON + (REDNET if enabled else BASELINE)
     dump(output / 'run_config.json', {**manifest, 'route': args.route, 'pid': os.getpid(),
          'cpu_affinity': sorted(os.sched_getaffinity(0)), 'sample_manifest_sha256': digest(args.samples),
          'selected_indices': selected, 'smoke_direct_solver': args.smoke_direct_solver,
-         'cegar_policy': 'batch-refinement-pgd-v1',
+         'cegar_policy': 'initial-pgd-batch-refinement-v2',
          'extra_refinement_merges': args.extra_refinement_merges,
          'pgd': search_options(args)['pgd_config'].to_dict(),
          'cegar_source_sha256': digest(Path(cegar.__file__)),
          'timing_definition': 'total: entry to final CEGAR return, including REDNet I/O and equivalence; excludes shared dataset/property preparation and supplementary smoke solver. CEGAR time includes its own CROWN calls; crown_time includes all CROWN calls and overlaps CEGAR time.'})
-    print(f'B3 START route={args.route} pid={os.getpid()} eps=0.02 split=train indices={selected} CROWN=cpu', flush=True)
+    print(f'B3 START route={args.route} pid={os.getpid()} eps={epsilon} split={manifest["dataset_split"]} indices={selected} CROWN=cpu', flush=True)
     with csv_path.open('x', newline='') as stream:
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
@@ -252,7 +257,7 @@ def run(args):
             dump(output / 'progress.json', {'sample_index': index, 'property_id': pid, 'stage': 'started', 'pid': os.getpid()})
             print(f'B3 SAMPLE START index={index} property={pid}', flush=True)
             row = dict.fromkeys(fields, '')
-            row.update(sample_index=index, property_id=pid, original_relu_count=192)
+            row.update(sample_index=index, property_id=pid, epsilon=epsilon, original_relu_count=192)
             metrics = dict(all_hidden_crown_seconds=0., crown_initial_time_seconds=0.,
                            crown_removed_relu_count=0, marabou_calls=0, original_concrete_checks=0)
             start = time.perf_counter()

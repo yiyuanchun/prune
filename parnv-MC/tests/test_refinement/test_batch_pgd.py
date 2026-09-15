@@ -4,6 +4,7 @@ Controller tests use the real undo/refine/finalize functions and inspect their
 event ordering. Numerical PGD tests use real graph evaluation and gradients.
 """
 import copy
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -68,7 +69,12 @@ def test_batch_restoration(monkeypatch, count, budget, extra, expected, extra_do
     ('UNKNOWN', [.1], [], 8, 0, 'UNKNOWN', 'F', 0),
     ('UNKNOWN', [.1, .1], [.4], 8, 2, 'UNKNOWN', 'FPF', 2),
 ])
-def test_controller(monkeypatch, tmp_path, crown, formal, pgd, count, budget, wanted, events, refinements):
+def test_controller(monkeypatch, tmp_path, crown, formal, pgd, count, budget, wanted, events, refinements,
+                    initial_candidate=None):
+    # Commit 2bba107 enables initial PGD in the MNIST/CIFAR variant only.
+    if Path(c.__file__).resolve().parents[2].name == 'parnv-MC' and crown == 'UNKNOWN':
+        pgd = [initial_candidate] + list(pgd)
+        events = 'P' + events
     state = make_state(count)
     original, current = object(), object()
     networks = iter([original, current])
@@ -117,6 +123,13 @@ def test_controller(monkeypatch, tmp_path, crown, formal, pgd, count, budget, wa
     assert result['marabou_calls'] == (0 if verifier.endswith('planet') else events.count('F'))
     assert result['total_refinement_steps'] == refinements
     assert len(state.refinement_log) == refinements
+
+
+def test_initial_pgd_genuine_skips_formal(monkeypatch, tmp_path):
+    if Path(c.__file__).resolve().parents[2].name != 'parnv-MC':
+        pytest.skip('Initial PGD was changed only in the MC variant')
+    test_controller(monkeypatch, tmp_path, 'UNKNOWN', [], [], 8, None,
+                    'UNSAFE', '', 0, initial_candidate=.9)
 
 
 @pytest.mark.parametrize('size', [784, 3072])
